@@ -1,0 +1,1190 @@
+import discord
+from discord.ext import commands
+import subprocess
+import sys
+from openpyxl import load_workbook
+import os
+import re
+from zoneinfo import ZoneInfo
+import json
+from pathlib import Path
+
+# Get the directory where discord.py is located
+BOT_DIR = Path(__file__).parent.absolute()
+
+# sanitize output for Discord (remove problematic unicode/control chars)
+def sanitize_output(text: str) -> str:
+    if text is None:
+        return ""
+    # Replace a few common emoji with ASCII labels
+    replacements = {
+        '✅': '[OK]',
+        '❌': '[ERROR]',
+        '⚠️': '[WARNING]',
+        '📊': '[DATA]',
+        '📋': '[INFO]',
+        '⏭️': '[SKIP]',
+    }
+    for k, v in replacements.items():
+        text = text.replace(k, v)
+
+    # Remove C0 control chars except newline and tab
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', str(text))
+    # Collapse very long whitespace
+    text = re.sub(r"\s{3,}", ' ', text)
+    return text
+
+# Helper function to run scripts with proper working directory
+def run_script(script_name, args):
+    """Run a Python script in the bot directory with proper working directory"""
+    return subprocess.run(
+        [sys.executable, script_name, *args],
+        cwd=str(BOT_DIR),
+        capture_output=True,
+        text=True,
+        timeout=30
+    )
+
+# additional imports for background tasks
+import asyncio
+import datetime
+
+def format_playtime(seconds: int) -> str:
+    """Convert playtime from seconds to human-readable format.
+    
+    - >= 30 days: 'x months, x days' (if days > 1) or 'x months'
+    - >= 24 hours: 'x days, x hours' (if hours > 0) or 'x days'
+    - >= 60 minutes: 'x hours x minutes' (if minutes > 0) or 'x hours'
+    - >= 60 seconds: 'x minutes x seconds' (if seconds > 0) or 'x minutes'
+    - else: 'x seconds'
+    """
+    if not isinstance(seconds, (int, float)):
+        return "0 seconds"
+    
+    seconds = int(seconds)
+    if seconds < 0:
+        return "0 seconds"
+    
+    # Define time units (in ascending order)
+    days = seconds // 86400
+    remaining_seconds = seconds % 86400
+    
+    hours = remaining_seconds // 3600
+    remaining_seconds %= 3600
+    
+    minutes = remaining_seconds // 60
+    secs = remaining_seconds % 60
+    
+    months = days // 30
+    days_in_month = days % 30
+    
+    # Build the string based on which units are significant
+    if seconds < 60:
+        return f"{seconds} second{'s' if seconds != 1 else ''}"
+    elif seconds < 3600:  # Less than 1 hour
+        if secs > 0:
+            return f"{minutes} minute{'s' if minutes != 1 else ''} {secs} second{'s' if secs != 1 else ''}"
+        else:
+            return f"{minutes} minute{'s' if minutes != 1 else ''}"
+    elif seconds < 86400:  # Less than 1 day
+        if minutes > 0:
+            return f"{hours} hour{'s' if hours != 1 else ''} {minutes} minute{'s' if minutes != 1 else ''}"
+        else:
+            return f"{hours} hour{'s' if hours != 1 else ''}"
+    elif seconds < 2592000:  # Less than 30 days
+        if hours > 0:
+            return f"{days} day{'s' if days != 1 else ''} {hours} hour{'s' if hours != 1 else ''}"
+        else:
+            return f"{days} day{'s' if days != 1 else ''}"
+    else:  # 30+ days
+        if days_in_month > 1:
+            return f"{months} month{'s' if months != 1 else ''} {days_in_month} day{'s' if days_in_month != 1 else ''}"
+        elif days_in_month == 1:
+            return f"{months} month{'s' if months != 1 else ''} 1 day"
+        else:
+            return f"{months} month{'s' if months != 1 else ''}"
+
+# tracked users file and creator identifier
+TRACKED_FILE = os.path.join(os.path.dirname(__file__), "tracked_users.txt")
+USER_LINKS_FILE = os.path.join(os.path.dirname(__file__), "user_links.json")
+CREATOR_NAME = "chuckegg"  # case-insensitive match fallback
+# Optionally set a numeric Discord user ID for direct DM (recommended for reliability)
+# Example: CREATOR_ID = 123456789012345678
+CREATOR_ID = "542467909549555734"
+CREATOR_TZ = ZoneInfo("America/New_York")
+
+# Prestige icons per 100 levels (index 0 = levels 0-99)
+PRESTIGE_ICONS = [
+    "❤", "✙", "✫", "✈", "✠", "♙", "⚡", "☢", "✏", "☯",
+    "☃️", "۞", "✤", "♫", "♚", "❉", "Σ", "￡", "✖", "❁",
+    "✚", "✯", "✆", "❥", "☾⋆⁺", "⚜", "✦", "⚝", "✉", "ツ",
+    "❣", "✮", "✿", "✲", "❂", "ƒ", "$", "⋚⋚", "Φ", "✌",
+]
+
+# Prestige colors (RGB tuples for Discord embed colors)
+# Levels: 0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000+
+PRESTIGE_COLORS = {
+    0: (119, 119, 119),      # GRAY (§7)
+    100: (255, 255, 255),    # WHITE (§f)
+    200: (255, 85, 85),      # RED (§c)
+    300: (255, 170, 0),      # GOLD (§6)
+    400: (255, 255, 85),     # YELLOW (§e)
+    500: (85, 255, 85),      # LIGHT_GREEN (§a)
+    600: (0, 170, 170),      # DARK_AQUA (§3)
+    700: (170, 0, 170),      # DARK_PURPLE (§5)
+    800: (255, 85, 255),     # LIGHT_PURPLE (§d)
+    900: None,               # Rainbow (special handling)
+    1000: (255, 255, 255),   # WHITE (§f)
+    1100: (255, 255, 255),   # WHITE brackets and numbers
+    1200: (255, 85, 85),     # RED brackets and numbers
+    1300: (255, 170, 0),     # GOLD/ORANGE brackets and numbers
+    1400: (255, 255, 85),    # YELLOW brackets and numbers
+    1500: (85, 255, 85),     # GREEN brackets and numbers
+    1600: (85, 255, 255),    # CYAN brackets and numbers
+    1700: (255, 85, 255),    # MAGENTA brackets and numbers
+    1800: (255, 85, 255),    # PINK/MAGENTA brackets and numbers
+    1900: None,              # Rainbow (special handling)
+    2000: (170, 170, 170),   # GRAY/TAN brackets and numbers
+    2100: (255, 255, 255),   # WHITE brackets with gray numbers
+    2200: (255, 85, 85),     # RED brackets with yellow numbers
+    2300: None,              # Rainbow brackets
+    2400: (170, 0, 170),     # PURPLE brackets with green numbers
+    2500: (255, 255, 255),   # WHITE brackets with green numbers
+    2600: (255, 255, 255),   # WHITE brackets with cyan numbers
+    2700: (255, 255, 255),   # WHITE brackets with magenta numbers
+    2800: (255, 85, 85),     # RED brackets with dark red numbers
+    2900: None,              # Rainbow brackets
+    3000: (255, 255, 255),   # WHITE brackets with gray numbers
+    3100: (255, 255, 255),   # WHITE brackets and numbers
+    3200: (255, 85, 85),     # RED brackets and numbers
+    3300: None,              # Rainbow brackets (orange/red/yellow)
+    3400: None,              # Rainbow brackets (yellow/orange)
+    3500: (85, 255, 85),     # GREEN brackets and numbers
+    3600: (85, 255, 255),    # CYAN/BLUE brackets and numbers
+    3700: (255, 255, 255),   # WHITE/YELLOW brackets with magenta numbers
+    3800: None,              # Rainbow brackets (purple/red)
+    3900: None,              # Rainbow brackets (full spectrum)
+    4000: (255, 255, 255),   # WHITE brackets with black numbers
+}
+
+
+def get_prestige_icon(level: int) -> str:
+    try:
+        lvl = int(level)
+    except Exception:
+        lvl = 0
+    idx = max(0, lvl // 100)
+    if idx >= len(PRESTIGE_ICONS):
+        idx = len(PRESTIGE_ICONS) - 1
+    return PRESTIGE_ICONS[idx]
+
+def get_prestige_color(level: int) -> tuple:
+    """Get RGB color tuple for a given prestige level.
+    Supports levels 0-1000. Returns default dark gray for levels outside this range.
+    """
+    try:
+        lvl = int(level)
+    except Exception:
+        lvl = 0
+    
+    # Find the closest prestige level color
+    for prestige_level in sorted(PRESTIGE_COLORS.keys(), reverse=True):
+        if lvl >= prestige_level:
+            color = PRESTIGE_COLORS[prestige_level]
+            # Handle Rainbow (None) by returning a default color or cycling
+            if color is None:
+                # For now, return a vibrant color for rainbow
+                return (255, 100, 200)
+            return color
+    
+    # Fallback to gray if below 0
+    return (119, 119, 119)
+
+def get_ansi_color_code(level: int) -> str:
+    """Get ANSI color code for a given prestige level."""
+    color = get_prestige_color(level)
+    
+    # Map RGB to closest basic ANSI color for Discord compatibility
+    r, g, b = color
+    
+    # Determine which basic ANSI color is closest
+    if r > 200 and g > 200 and b > 200:
+        return "\u001b[0;37m"  # White
+    elif r < 100 and g < 100 and b < 100:
+        return "\u001b[0;30m"  # Gray
+    elif r > 200 and g < 100 and b < 100:
+        return "\u001b[0;31m"  # Red
+    elif r > 200 and g > 150 and b < 100:
+        return "\u001b[0;33m"  # Yellow/Gold
+    elif r < 100 and g > 200 and b < 100:
+        return "\u001b[0;32m"  # Green
+    elif r < 100 and g > 150 and b > 150:
+        return "\u001b[0;36m"  # Cyan
+    elif r > 150 and g < 100 and b > 150:
+        return "\u001b[0;35m"  # Magenta/Pink
+    elif r > 200 and g > 200 and b < 100:
+        return "\u001b[0;33m"  # Yellow
+    else:
+        return "\u001b[0;37m"  # Default White
+
+def make_bold_ansi(code: str) -> str:
+    """Convert a basic ANSI color code to bold variant.
+    Expects codes like "\u001b[0;33m" and returns "\u001b[1;33m".
+    """
+    return code.replace("[0;", "[1;")
+
+def load_tracked_users():
+    if not os.path.exists(TRACKED_FILE):
+        return []
+    with open(TRACKED_FILE, "r", encoding="utf-8") as f:
+        lines = [l.strip() for l in f.readlines() if l.strip()]
+    return lines
+
+def add_tracked_user(ign: str) -> bool:
+    users = load_tracked_users()
+    key = ign.casefold()
+    for u in users:
+        if u.casefold() == key:
+            return False
+    # append
+    with open(TRACKED_FILE, "a", encoding="utf-8") as f:
+        f.write(ign + "\n")
+    return True
+
+def load_user_links():
+    """Load username -> Discord user ID mappings from JSON file"""
+    if not os.path.exists(USER_LINKS_FILE):
+        return {}
+    try:
+        with open(USER_LINKS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_user_links(links: dict):
+    """Save username -> Discord user ID mappings to JSON file"""
+    with open(USER_LINKS_FILE, "w", encoding="utf-8") as f:
+        json.dump(links, f, indent=2)
+
+def link_user_to_ign(discord_user_id: int, ign: str):
+    """Link a Discord user ID to a Minecraft username (case-insensitive)"""
+    links = load_user_links()
+    # Store with original case but search case-insensitively
+    links[ign.casefold()] = str(discord_user_id)
+    save_user_links(links)
+
+def is_user_authorized(discord_user_id: int, ign: str) -> bool:
+    """Check if a Discord user is authorized to manage a username"""
+    links = load_user_links()
+    key = ign.casefold()
+    return links.get(key) == str(discord_user_id)
+
+def remove_tracked_user(ign: str) -> bool:
+    """Remove a username from tracked users list"""
+    users = load_tracked_users()
+    key = ign.casefold()
+    found = False
+    new_users = []
+    for u in users:
+        if u.casefold() == key:
+            found = True
+        else:
+            new_users.append(u)
+    
+    if found:
+        with open(TRACKED_FILE, "w", encoding="utf-8") as f:
+            for u in new_users:
+                f.write(u + "\n")
+    return found
+
+def unlink_user_from_ign(ign: str) -> bool:
+    """Remove username -> Discord user ID link"""
+    links = load_user_links()
+    key = ign.casefold()
+    if key in links:
+        del links[key]
+        save_user_links(links)
+        return True
+    return False
+
+async def send_fetch_message(message: str):
+    # DM the creator (prefer explicit ID if set)
+    user = None
+    if CREATOR_ID is not None:
+        try:
+            uid = int(CREATOR_ID)
+            user = bot.get_user(uid) or await bot.fetch_user(uid)
+        except Exception:
+            user = None
+    if user is None:
+        # fallback to name/display name search across guilds
+        for guild in bot.guilds:
+            for member in guild.members:
+                if member.bot:
+                    continue
+                name_match = member.name.casefold() == CREATOR_NAME.casefold()
+                display_match = member.display_name.casefold() == CREATOR_NAME.casefold()
+                if name_match or display_match:
+                    user = member
+                    break
+            if user:
+                break
+    if user:
+        try:
+            await user.send(message)
+            return
+        except Exception as e:
+            # Common cause: user has DMs disabled (Discord error 50007). Fall back to channel.
+            print(f"[WARNING] Could not DM creator: {e}")
+    # fallback: send to system channel or first writable channel
+    for guild in bot.guilds:
+        channel = None
+        if guild.system_channel and guild.system_channel.permissions_for(guild.me).send_messages:
+            channel = guild.system_channel
+        else:
+            for ch in guild.text_channels:
+                if ch.permissions_for(guild.me).send_messages:
+                    channel = ch
+                    break
+        if channel:
+            try:
+                await channel.send(message)
+                break
+            except Exception:
+                continue
+
+async def scheduler_loop():
+    """Automatic scheduler using batch_update.py"""
+    last_run = None
+    while True:
+        now = datetime.datetime.now(tz=CREATOR_TZ)
+        # Run batch update at 9:30 AM
+        if now.hour == 9 and now.minute == 30:
+            today = now.date()
+            if last_run != today:
+                try:
+                    # Step 1: Rotate daily snapshot to yesterday snapshot
+                    def run_rotate():
+                        return run_script("rotate_yesterday.py", [])
+                    
+                    rotate_result = await asyncio.to_thread(run_rotate)
+                    if rotate_result.returncode != 0:
+                        await send_fetch_message(f"Warning: Yesterday rotation failed at {now.strftime('%I:%M %p')}")
+                    
+                    # Step 2: Determine which snapshots to take
+                    # Daily: always
+                    # Monthly: only on 1st of month
+                    schedule = "all" if now.day == 1 else "daily"
+                    
+                    # Step 3: Run batch_update.py (without force - respect metadata)
+                    def run_batch():
+                        return run_script("batch_update.py", ["-schedule", schedule])
+                    
+                    result = await asyncio.to_thread(run_batch)
+                    if result.returncode == 0:
+                        msg = f"Daily batch update completed at {now.strftime('%I:%M %p')}"
+                        if now.day == 1:
+                            msg += " (including monthly snapshots)"
+                        await send_fetch_message(msg)
+                    else:
+                        error_msg = result.stderr or result.stdout or "Unknown error"
+                        await send_fetch_message(f"Daily batch update failed: {error_msg[:200]}")
+                except Exception as e:
+                    await send_fetch_message(f"Daily batch update error: {str(e)}")
+                
+                last_run = today
+        
+        await asyncio.sleep(20)
+
+# Helper class for stats tab view
+class StatsTabView(discord.ui.View):
+    def __init__(self, sheet, ign, level_value: int, prestige_icon: str):
+        super().__init__()
+        self.sheet = sheet
+        self.ign = ign
+        self.level_value = level_value
+        self.prestige_icon = prestige_icon
+        self.current_tab = "all-time"
+        
+        # Find rows dynamically by searching column A for stat names
+        self.stat_rows = self._find_stat_rows()
+        
+        # Column mappings for each period
+        self.column_map = {
+            "all-time": "B",      # All-time values
+            "session": "D",       # Session Snapshot
+            "daily": "F",         # Daily Snapshot
+            "yesterday": "H",     # Yesterday Snapshot
+            "monthly": "J",       # Monthly Snapshot
+        }
+        self.update_buttons()
+
+    def _find_stat_rows(self):
+        """Find row numbers for each stat by searching column A"""
+        rows = {}
+        for i in range(1, 100):  # Search first 100 rows
+            stat_name = self.sheet[f'A{i}'].value
+            if stat_name:
+                stat_key = str(stat_name).lower()
+                if stat_key == 'kills':
+                    rows['kills'] = i
+                elif stat_key == 'deaths':
+                    rows['deaths'] = i
+                elif stat_key == 'wins':
+                    rows['wins'] = i
+                elif stat_key == 'losses':
+                    rows['losses'] = i
+        return rows
+    
+    def update_buttons(self):
+        # Update button styles based on current tab
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                if child.custom_id == self.current_tab:
+                    child.style = discord.ButtonStyle.primary
+                else:
+                    child.style = discord.ButtonStyle.secondary
+    
+    def get_stats_embed(self, tab_name):
+        col = self.column_map[tab_name]
+        
+        # Get values from the appropriate column
+        kills = self.sheet[f"{col}{self.stat_rows['kills']}"].value or 0
+        deaths = self.sheet[f"{col}{self.stat_rows['deaths']}"].value or 0
+        wins = self.sheet[f"{col}{self.stat_rows['wins']}"].value or 0
+        losses = self.sheet[f"{col}{self.stat_rows['losses']}"].value or 0
+        
+        # Calculate K/D and W/L ratios dynamically
+        kd_ratio = round(kills / deaths, 2) if deaths > 0 else kills
+        wl_ratio = round(wins / losses, 2) if losses > 0 else wins
+        
+        # Get prestige color based on level
+        prestige_color = get_prestige_color(self.level_value)
+        ansi_code = get_ansi_color_code(self.level_value)
+        bold_code = make_bold_ansi(ansi_code)
+        reset_code = "\u001b[0;0m"
+        
+        embed = discord.Embed(
+            title="",
+            color=discord.Color.from_rgb(*prestige_color)
+        )
+        
+        # Add colored level display with full title as a full-width field
+        # Both level and icon inside brackets are bold and colored
+        colored_title = f"[{bold_code}{self.level_value}{self.prestige_icon}{reset_code}] {self.ign} - {tab_name.title()} Stats"
+        embed.add_field(name="", value=f"```ansi\n{colored_title}```", inline=False)
+        
+        # Add 6 inline fields: label as field name, data in compact code block
+        embed.add_field(name="Wins", value=f"```{str(wins)}```", inline=True)
+        embed.add_field(name="Losses", value=f"```{str(losses)}```", inline=True)
+        embed.add_field(name="W/L Ratio", value=f"```{str(wl_ratio)}```", inline=True)
+
+        embed.add_field(name="Kills", value=f"```{str(kills)}```", inline=True)
+        embed.add_field(name="Deaths", value=f"```{str(deaths)}```", inline=True)
+        embed.add_field(name="K/D Ratio", value=f"```{str(kd_ratio)}```", inline=True)
+        
+        return embed
+    
+    @discord.ui.button(label="All-time", custom_id="all-time", style=discord.ButtonStyle.primary)
+    async def all_time_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_tab = "all-time"
+        self.update_buttons()
+        embed = self.get_stats_embed(self.current_tab)
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    @discord.ui.button(label="Session", custom_id="session", style=discord.ButtonStyle.secondary)
+    async def session_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_tab = "session"
+        self.update_buttons()
+        embed = self.get_stats_embed(self.current_tab)
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    @discord.ui.button(label="Daily", custom_id="daily", style=discord.ButtonStyle.secondary)
+    async def daily_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_tab = "daily"
+        self.update_buttons()
+        embed = self.get_stats_embed(self.current_tab)
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    @discord.ui.button(label="Yesterday", custom_id="yesterday", style=discord.ButtonStyle.secondary)
+    async def yesterday_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_tab = "yesterday"
+        self.update_buttons()
+        embed = self.get_stats_embed(self.current_tab)
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    @discord.ui.button(label="Monthly", custom_id="monthly", style=discord.ButtonStyle.secondary)
+    async def monthly_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_tab = "monthly"
+        self.update_buttons()
+        embed = self.get_stats_embed(self.current_tab)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
+# Leaderboard view for switching between periods
+class LeaderboardView(discord.ui.View):
+    def __init__(self, metric: str, wb):
+        super().__init__()
+        self.metric = metric
+        self.wb = wb
+        self.current_period = "lifetime"
+        
+        # Column mappings for each period
+        self.column_map = {
+            "lifetime": "B",      # All-time values
+            "session": "D",       # Session Snapshot
+            "daily": "F",         # Daily Snapshot
+            "yesterday": "H",     # Yesterday Snapshot
+            "monthly": "J",       # Monthly Snapshot
+        }
+        
+        self.metric_labels = {
+            "kills": "Kills",
+            "kills_void": "Void Kills",
+            "kills_explosive": "Explosive Kills",
+            "kills_melee": "Melee Kills",
+            "kills_bow": "Bow Kills",
+            "deaths": "Deaths",
+            "deaths_void": "Void Deaths",
+            "deaths_explosive": "Explosive Deaths",
+            "deaths_melee": "Melee Deaths",
+            "deaths_bow": "Bow Deaths",
+            "kdr": "K/D Ratio",
+            "wins": "Wins",
+            "losses": "Losses",
+            "wlr": "W/L Ratio",
+            "experience": "Experience",
+            "level": "Level",
+            "coins": "Coins",
+            "damage_dealt": "Damage Dealt",
+            "games_played": "Games Played",
+            "sheep_thrown": "Sheep Thrown",
+            "magic_wool_hit": "Magic Wool Hit",
+            "playtime": "Playtime",
+        }
+        self.update_buttons()
+    
+    def update_buttons(self):
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                if child.custom_id == self.current_period:
+                    child.style = discord.ButtonStyle.primary
+                else:
+                    child.style = discord.ButtonStyle.secondary
+    
+    def get_leaderboard_embed(self, period: str):
+        col = self.column_map[period]
+        metric_label = self.metric_labels[self.metric]
+        
+        # Collect all player stats with level info
+        leaderboard = []
+        for sheet_name in self.wb.sheetnames:
+            if sheet_name.casefold() == "sheep wars historical data":
+                continue
+            try:
+                sheet = self.wb[sheet_name]
+                
+                # Find stat rows dynamically
+                stat_rows = {}
+                for i in range(1, 100):
+                    stat_name = sheet[f'A{i}'].value
+                    if stat_name:
+                        stat_key = str(stat_name).lower()
+                        if stat_key not in stat_rows:  # Store first occurrence
+                            stat_rows[stat_key] = i
+                
+                # Get base values from appropriate column
+                metric_value = None
+                
+                if self.metric == "kdr":
+                    kills = sheet[f"{col}{stat_rows.get('kills', 1)}"].value or 0
+                    deaths = sheet[f"{col}{stat_rows.get('deaths', 1)}"].value or 0
+                    metric_value = round(kills / deaths, 2) if deaths > 0 else kills
+                elif self.metric == "wlr":
+                    wins = sheet[f"{col}{stat_rows.get('wins', 1)}"].value or 0
+                    losses = sheet[f"{col}{stat_rows.get('losses', 1)}"].value or 0
+                    metric_value = round(wins / losses, 2) if losses > 0 else wins
+                else:
+                    # Find the stat row for this metric
+                    metric_key = self.metric
+                    if metric_key in stat_rows:
+                        value = sheet[f"{col}{stat_rows[metric_key]}"].value or 0
+                        metric_value = value
+                
+                if metric_value is not None and isinstance(metric_value, (int, float)):
+                    # Get level for prestige display
+                    try:
+                        level_value = 0
+                        level_row = None
+                        exp_row = None
+                        for i in range(1, 100):
+                            name = sheet[f'A{i}'].value
+                            if not name:
+                                continue
+                            key = str(name).lower()
+                            if key == 'level' and level_row is None:
+                                level_row = i
+                            elif key == 'experience' and exp_row is None:
+                                exp_row = i
+                        if level_row is not None:
+                            level_value = int(sheet[f'B{level_row}'].value or 0)
+                        elif exp_row is not None:
+                            exp = sheet[f'B{exp_row}'].value or 0
+                            level_value = int((exp or 0) / 5000)
+                    except Exception:
+                        level_value = 0
+                    
+                    icon = get_prestige_icon(level_value)
+                    is_playtime = self.metric == "playtime"
+                    leaderboard.append((sheet_name, float(metric_value), metric_value, is_playtime, level_value, icon))
+                
+            except Exception:
+                continue
+        
+        # Sort by value descending
+        leaderboard.sort(key=lambda x: x[1], reverse=True)
+        
+        # Build embed
+        embed = discord.Embed(
+            title=f"{period.title()} {metric_label} Leaderboard",
+            color=discord.Color.from_rgb(54, 57, 63)
+        )
+        
+        if not leaderboard:
+            embed.description = "No data available"
+        else:
+            # Top 10 with colored prestige prefix
+            description_lines = []
+            ansi_code = get_ansi_color_code
+            reset_code = "\u001b[0;0m"
+            
+            for i, entry in enumerate(leaderboard[:10], 1):
+                player = entry[0]
+                value = entry[2]
+                is_playtime = entry[3]
+                level_value = entry[4]
+                icon = entry[5]
+                
+                medal = {1: "1.", 2: "2.", 3: "3."}.get(i, f"{i}.")
+                color_code = ansi_code(level_value)
+                bold_code = make_bold_ansi(color_code)
+                prestige_display = f"{bold_code}[{level_value}{icon}]{reset_code}"
+                
+                # Format value based on type
+                if is_playtime:
+                    formatted_value = format_playtime(int(value))
+                else:
+                    formatted_value = f"{value}"
+                
+                description_lines.append(f"{medal} {prestige_display} {player}: {formatted_value}")
+            
+            embed.description = f"```ansi\n" + "\n".join(description_lines) + "\n```"
+        
+        return embed
+    
+    @discord.ui.button(label="Lifetime", custom_id="lifetime", style=discord.ButtonStyle.primary)
+    async def lifetime_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_period = "lifetime"
+        self.update_buttons()
+        embed = self.get_leaderboard_embed(self.current_period)
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    @discord.ui.button(label="Session", custom_id="session", style=discord.ButtonStyle.secondary)
+    async def session_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_period = "session"
+        self.update_buttons()
+        embed = self.get_leaderboard_embed(self.current_period)
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    @discord.ui.button(label="Daily", custom_id="daily", style=discord.ButtonStyle.secondary)
+    async def daily_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_period = "daily"
+        self.update_buttons()
+        embed = self.get_leaderboard_embed(self.current_period)
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    @discord.ui.button(label="Yesterday", custom_id="yesterday", style=discord.ButtonStyle.secondary)
+    async def yesterday_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_period = "yesterday"
+        self.update_buttons()
+        embed = self.get_leaderboard_embed(self.current_period)
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    @discord.ui.button(label="Monthly", custom_id="monthly", style=discord.ButtonStyle.secondary)
+    async def monthly_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_period = "monthly"
+        self.update_buttons()
+        embed = self.get_leaderboard_embed(self.current_period)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
+# Create bot with command tree for slash commands
+intents = discord.Intents.default()
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# Approval system for claim command
+class ApprovalView(discord.ui.View):
+    def __init__(self, ign: str, requester: str, requester_id: int, original_interaction: discord.Interaction):
+        super().__init__(timeout=None)
+        self.ign = ign
+        self.requester = requester
+        self.requester_id = requester_id
+        self.original_interaction = original_interaction
+        self.approved = None
+        self.done_event = asyncio.Event()
+    
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success)
+    async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.approved = True
+        self.done_event.set()
+        await interaction.response.edit_message(content=f"You accepted claim for {self.ign}.", view=None)
+    
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger)
+    async def deny_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.approved = False
+        self.done_event.set()
+        await interaction.response.edit_message(content=f"You denied claim for {self.ign}.", view=None)
+
+# Bot token
+# Read from BOT_TOKEN.txt in the same directory
+TOKEN_FILE = os.path.join(os.path.dirname(__file__), "BOT_TOKEN.txt")
+try:
+    with open(TOKEN_FILE, "r", encoding="utf-8") as f:
+        DISCORD_TOKEN = f.read().strip()
+except Exception as e:
+    DISCORD_TOKEN = None
+    print(f"[ERROR] Failed to read BOT_TOKEN.txt: {e}")
+if not DISCORD_TOKEN:
+    raise ValueError("BOT_TOKEN.txt is missing or empty")
+
+@bot.event
+async def on_ready():
+    print(f"[OK] Bot logged in as {bot.user}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"[OK] Synced {len(synced)} command(s)")
+    except Exception as e:
+        print(f"[ERROR] Failed to sync commands: {e}")
+    # start background scheduler once
+    if not getattr(bot, "scheduler_started", False):
+        bot.loop.create_task(scheduler_loop())
+        bot.scheduler_started = True
+
+@bot.tree.command(name="track", description="Create a stats sheet for a player (no authorization required)")
+@discord.app_commands.describe(ign="Minecraft IGN")
+async def track(interaction: discord.Interaction, ign: str):
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.defer()
+        except (discord.errors.NotFound, discord.errors.HTTPException):
+            return
+    
+    try:
+        # Check if sheet already exists
+        excel_file = BOT_DIR / "stats.xlsx"
+        if excel_file.exists():
+            try:
+                wb = load_workbook(str(excel_file))
+                for sheet_name in wb.sheetnames:
+                    if sheet_name.casefold() == ign.casefold():
+                        wb.close()
+                        await interaction.followup.send(f"{ign} is already being tracked.")
+                        return
+                wb.close()
+            except Exception:
+                pass
+        
+        # Create sheet using api_get.py
+        result = run_script("api_get.py", ["-ign", ign, "-session", "-daily", "-yesterday", "-monthly"])
+
+        if result.returncode == 0:
+            print(f"[OK] api_get.py succeeded for {ign}")
+            
+            # Verify the sheet was actually created
+            excel_file = BOT_DIR / "stats.xlsx"
+            if not excel_file.exists():
+                await interaction.followup.send(f"[ERROR] Excel file was not created for {ign}.")
+                return
+            
+            # Load and check if the sheet exists
+            try:
+                wb = load_workbook(str(excel_file))
+                sheet_exists = False
+                for sheet_name in wb.sheetnames:
+                    if sheet_name.casefold() == ign.casefold():
+                        sheet_exists = True
+                        break
+                wb.close()
+                
+                if not sheet_exists:
+                    await interaction.followup.send(f"[ERROR] Sheet for {ign} was not created.")
+                    return
+            except Exception as e:
+                await interaction.followup.send(f"[ERROR] Could not verify sheet creation: {str(e)}")
+                return
+            
+            # Add to tracked users list
+            added = add_tracked_user(ign)
+            
+            if added:
+                await interaction.followup.send(f"{ign} is now being tracked. Use `/claim ign:{ign}` to link this username to your Discord account.")
+            else:
+                await interaction.followup.send(f"{ign} is already being tracked.")
+        else:
+            err = (result.stderr or result.stdout) or "Unknown error"
+            print(f"[ERROR] api_get.py failed for {ign}:")
+            print(f"  stdout: {result.stdout}")
+            print(f"  stderr: {result.stderr}")
+            await interaction.followup.send(f"Error creating sheet for {ign}:\n```{sanitize_output(err[:500])}```")
+            
+    except subprocess.TimeoutExpired:
+        await interaction.followup.send("[ERROR] Command timed out (30s limit)")
+    except Exception as e:
+        await interaction.followup.send(f"[ERROR] {str(e)}")
+
+@bot.tree.command(name="claim", description="Link a Minecraft username to your Discord account")
+@discord.app_commands.describe(ign="Minecraft IGN")
+async def claim(interaction: discord.Interaction, ign: str):
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.defer()
+        except (discord.errors.NotFound, discord.errors.HTTPException):
+            return
+    
+    try:
+        # Check if username is tracked
+        users = load_tracked_users()
+        found = False
+        for u in users:
+            if u.casefold() == ign.casefold():
+                found = True
+                break
+        
+        if not found:
+            await interaction.followup.send(f"[ERROR] {ign} is not being tracked. Use `/track ign:{ign}` first.")
+            return
+        
+        # Check if already claimed
+        links = load_user_links()
+        if ign.casefold() in links:
+            claimed_by = links[ign.casefold()]
+            if claimed_by == str(interaction.user.id):
+                await interaction.followup.send(f"[ERROR] You have already claimed {ign}.")
+            else:
+                await interaction.followup.send(f"[ERROR] {ign} is already claimed by another user.")
+            return
+        
+        # Get creator user
+        creator = None
+        if CREATOR_ID is not None:
+            try:
+                uid = int(CREATOR_ID)
+                creator = bot.get_user(uid) or await bot.fetch_user(uid)
+            except Exception:
+                pass
+        
+        if creator is None:
+            await interaction.followup.send("[ERROR] Cannot reach creator for approval. Contact administrator.")
+            return
+        
+        # Send waiting message to requester
+        requester_name = interaction.user.name
+        await interaction.followup.send(f"Asked Chuckegg for approval to claim {ign}. Please wait for confirmation.")
+        
+        # Create approval view and send to creator
+        view = ApprovalView(ign, requester_name, interaction.user.id, interaction)
+        try:
+            await creator.send(f"{requester_name} wants to claim {ign}.", view=view)
+        except Exception as e:
+            await interaction.followup.send(f"[ERROR] Could not send approval request to creator: {str(e)}")
+            return
+        
+        # Wait for approval (no timeout)
+        await view.done_event.wait()
+        
+        # Process based on approval
+        if view.approved:
+            link_user_to_ign(interaction.user.id, ign)
+            await interaction.followup.send(f"Chuckegg has approved your claim. {ign} is now linked to your Discord account.")
+        else:
+            await interaction.followup.send(f"Chuckegg has denied your claim for {ign}.")
+            
+    except Exception as e:
+        await interaction.followup.send(f"[ERROR] {str(e)}")
+
+@bot.tree.command(name="unclaim", description="Unlink a Minecraft username from your Discord account")
+@discord.app_commands.describe(ign="Minecraft IGN to unclaim")
+async def unclaim(interaction: discord.Interaction, ign: str):
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.defer()
+        except (discord.errors.NotFound, discord.errors.HTTPException):
+            return
+    
+    # Check if user is authorized to unclaim this username
+    if not is_user_authorized(interaction.user.id, ign):
+        await interaction.followup.send(f"[ERROR] You are not authorized to unclaim {ign}. Only the user who claimed this username can unclaim it.")
+        return
+    
+    try:
+        # Remove from user links
+        removed_link = unlink_user_from_ign(ign)
+        
+        if removed_link:
+            await interaction.followup.send(f"Successfully unclaimed {ign}. You are no longer linked to this username.")
+        else:
+            await interaction.followup.send(f"[WARNING] No claim found for {ign}.")
+            
+    except Exception as e:
+        await interaction.followup.send(f"[ERROR] Failed to unclaim: {str(e)}")
+
+@bot.tree.command(name="reset", description="Reset session snapshot for a player")
+@discord.app_commands.describe(ign="Minecraft IGN")
+async def reset(interaction: discord.Interaction, ign: str):
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.defer()
+        except (discord.errors.NotFound, discord.errors.HTTPException):
+            return
+    
+    # Check if user is authorized to reset session for this username
+    if not is_user_authorized(interaction.user.id, ign):
+        await interaction.followup.send(f"[ERROR] You are not authorized to reset session for {ign}. Only the user who claimed this username can reset its session.")
+        return
+    
+    try:
+        result = run_script("api_get.py", ["-ign", ign, "-session"])
+
+        if result.returncode == 0:
+            await interaction.followup.send(f"Session snapshot reset for {ign}.")
+        else:
+            err = (result.stderr or result.stdout) or "Unknown error"
+            await interaction.followup.send(f"[ERROR] {sanitize_output(err)}")
+    except subprocess.TimeoutExpired:
+        await interaction.followup.send("[ERROR] Command timed out (30s limit)")
+    except Exception as e:
+        await interaction.followup.send(f"[ERROR] {str(e)}")
+
+@bot.tree.command(name="dmme", description="Send yourself a test DM from the bot")
+async def dmme(interaction: discord.Interaction):
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except (discord.errors.NotFound, discord.errors.HTTPException):
+            return
+    try:
+        await interaction.user.send("Hello! This is a private message from the bot.")
+        await interaction.followup.send("Sent you a DM.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send("Couldn't DM you. Check your privacy settings (Allow DMs from server members).", ephemeral=True)
+
+
+@bot.tree.command(name="refresh", description="Manually run batch snapshot update for all tracked users")
+@discord.app_commands.describe(mode="One of: daily, yesterday, monthly, or all")
+@discord.app_commands.choices(mode=[
+    discord.app_commands.Choice(name="daily", value="daily"),
+    discord.app_commands.Choice(name="yesterday", value="yesterday"),
+    discord.app_commands.Choice(name="monthly", value="monthly"),
+    discord.app_commands.Choice(name="all (daily + yesterday + monthly)", value="all"),
+])
+async def refresh(interaction: discord.Interaction, mode: discord.app_commands.Choice[str]):
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except (discord.errors.NotFound, discord.errors.HTTPException):
+            return
+    try:
+        # Run batch_update.py with selected schedule
+        def run_batch():
+            return run_script("batch_update.py", ["-schedule", mode.value])
+        
+        result = await asyncio.to_thread(run_batch)
+        
+        if result.returncode == 0:
+            msg = f"Batch snapshot update completed for schedule: {mode.name}"
+        else:
+            error_msg = result.stderr or result.stdout or "Unknown error"
+            msg = f"Batch update failed: {error_msg[:300]}"
+        
+        # Try to DM the invoking user directly
+        try:
+            await interaction.user.send(msg)
+            await interaction.followup.send("Sent you a DM with the results.", ephemeral=True)
+        except Exception:
+            # Fallback to ephemeral if DMs are closed
+            await interaction.followup.send(msg, ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"[ERROR] {str(e)}", ephemeral=True)
+
+@bot.tree.command(name="sheepwars", description="Get player stats with deltas")
+@discord.app_commands.describe(ign="Minecraft IGN")
+async def sheepwars(interaction: discord.Interaction, ign: str):
+    # Defer FIRST, before any long operations
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.defer()
+        except (discord.errors.NotFound, discord.errors.HTTPException):
+            # Interaction expired or already acknowledged - nothing we can do
+            return
+    
+    try:
+        # Fetch fresh stats using api_get.py (updates all-time only, no snapshots)
+        result = run_script("api_get.py", ["-ign", ign])
+        
+        if result.returncode != 0:
+            error_msg = result.stderr or result.stdout or "Unknown error"
+            await interaction.followup.send(f"[ERROR] Failed to fetch stats:\n```{error_msg[:500]}```")
+            return
+        
+        # Read Excel file and get stats
+        EXCEL_FILE = BOT_DIR / "stats.xlsx"
+        if not EXCEL_FILE.exists():
+            await interaction.followup.send("[ERROR] Excel file not found")
+            return
+        
+        wb = load_workbook(EXCEL_FILE)
+        
+        # Find sheet case-insensitively
+        key = ign.casefold()
+        found_sheet = None
+        for sheet_name in wb.sheetnames:
+            if sheet_name.casefold() == key:
+                found_sheet = wb[sheet_name]
+                break
+        
+        if found_sheet is None:
+            await interaction.followup.send(f"[ERROR] Player sheet '{ign}' not found")
+            return
+        
+        # Pull level and prestige icon for title decoration
+        try:
+            # Prefer explicit 'level' row if present; fallback to deriving from 'experience'
+            level_value = 0
+            level_row = None
+            exp_row = None
+            for i in range(1, 100):
+                name = found_sheet[f'A{i}'].value
+                if not name:
+                    continue
+                key = str(name).lower()
+                if key == 'level' and level_row is None:
+                    level_row = i
+                elif key == 'experience' and exp_row is None:
+                    exp_row = i
+            if level_row is not None:
+                level_value = int(found_sheet[f'B{level_row}'].value or 0)
+            elif exp_row is not None:
+                exp = found_sheet[f'B{exp_row}'].value or 0
+                level_value = int((exp or 0) / 5000)
+        except Exception:
+            level_value = 0
+        prestige_icon = get_prestige_icon(level_value)
+
+        # Create view with tabs
+        view = StatsTabView(found_sheet, ign, level_value, prestige_icon)
+        embed = view.get_stats_embed("all-time")
+        
+        await interaction.followup.send(embed=embed, view=view)
+        wb.close()
+        
+    except subprocess.TimeoutExpired:
+        await interaction.followup.send("[ERROR] Command timed out (30s limit)")
+    except Exception as e:
+        await interaction.followup.send(f"[ERROR] {str(e)}")
+
+# Standalone leaderboard commands
+@bot.tree.command(name="leaderboard", description="View player leaderboards")
+@discord.app_commands.describe(metric="Choose a stat to rank players by")
+@discord.app_commands.choices(metric=[
+    discord.app_commands.Choice(name="Kills", value="kills"),
+    discord.app_commands.Choice(name="Deaths", value="deaths"),
+    discord.app_commands.Choice(name="K/D Ratio", value="kdr"),
+    discord.app_commands.Choice(name="Wins", value="wins"),
+    discord.app_commands.Choice(name="Losses", value="losses"),
+    discord.app_commands.Choice(name="W/L Ratio", value="wlr"),
+    discord.app_commands.Choice(name="Experience", value="experience"),
+    discord.app_commands.Choice(name="Level", value="level"),
+    discord.app_commands.Choice(name="Coins", value="coins"),
+    discord.app_commands.Choice(name="Damage Dealt", value="damage_dealt"),
+    discord.app_commands.Choice(name="Games Played", value="games_played"),
+    discord.app_commands.Choice(name="Sheep Thrown", value="sheep_thrown"),
+    discord.app_commands.Choice(name="Magic Wool Hit", value="magic_wool_hit"),
+    discord.app_commands.Choice(name="Playtime", value="playtime"),
+])
+async def leaderboard(interaction: discord.Interaction, metric: discord.app_commands.Choice[str]):
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.defer()
+        except (discord.errors.NotFound, discord.errors.HTTPException):
+            return
+    try:
+        EXCEL_FILE = "stats.xlsx"
+        if not os.path.exists(EXCEL_FILE):
+            await interaction.followup.send("[ERROR] Excel file not found")
+            return
+        wb = load_workbook(EXCEL_FILE)
+        view = LeaderboardView(metric.value, wb)
+        embed = view.get_leaderboard_embed("lifetime")
+        await interaction.followup.send(embed=embed, view=view)
+    except Exception as e:
+        await interaction.followup.send(f"[ERROR] {str(e)}")
+
+
+@bot.tree.command(name="kill-leaderboard", description="View kills leaderboard by type")
+@discord.app_commands.describe(metric="Choose which kill type to rank by")
+@discord.app_commands.choices(metric=[
+    discord.app_commands.Choice(name="Total Kills", value="kills"),
+    discord.app_commands.Choice(name="Void Kills", value="kills_void"),
+    discord.app_commands.Choice(name="Explosive Kills", value="kills_explosive"),
+    discord.app_commands.Choice(name="Melee Kills", value="kills_melee"),
+    discord.app_commands.Choice(name="Bow Kills", value="kills_bow"),
+])
+async def kill_leaderboard(interaction: discord.Interaction, metric: discord.app_commands.Choice[str]):
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.defer()
+        except (discord.errors.NotFound, discord.errors.HTTPException):
+            return
+    try:
+        EXCEL_FILE = "stats.xlsx"
+        if not os.path.exists(EXCEL_FILE):
+            await interaction.followup.send("[ERROR] Excel file not found")
+            return
+        wb = load_workbook(EXCEL_FILE)
+        view = LeaderboardView(metric.value, wb)
+        embed = view.get_leaderboard_embed("lifetime")
+        await interaction.followup.send(embed=embed, view=view)
+    except Exception as e:
+        await interaction.followup.send(f"[ERROR] {str(e)}")
+
+
+@bot.tree.command(name="death-leaderboard", description="View deaths leaderboard by type")
+@discord.app_commands.describe(metric="Choose which death type to rank by")
+@discord.app_commands.choices(metric=[
+    discord.app_commands.Choice(name="Total Deaths", value="deaths"),
+    discord.app_commands.Choice(name="Void Deaths", value="deaths_void"),
+    discord.app_commands.Choice(name="Explosive Deaths", value="deaths_explosive"),
+    discord.app_commands.Choice(name="Melee Deaths", value="deaths_melee"),
+    discord.app_commands.Choice(name="Bow Deaths", value="deaths_bow"),
+])
+async def death_leaderboard(interaction: discord.Interaction, metric: discord.app_commands.Choice[str]):
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.defer()
+        except (discord.errors.NotFound, discord.errors.HTTPException):
+            return
+    try:
+        EXCEL_FILE = "stats.xlsx"
+        if not os.path.exists(EXCEL_FILE):
+            await interaction.followup.send("[ERROR] Excel file not found")
+            return
+        wb = load_workbook(EXCEL_FILE)
+        view = LeaderboardView(metric.value, wb)
+        embed = view.get_leaderboard_embed("lifetime")
+        await interaction.followup.send(embed=embed, view=view)
+    except Exception as e:
+        await interaction.followup.send(f"[ERROR] {str(e)}")
+
+# Run bot
+if __name__ == "__main__":
+    bot.run(DISCORD_TOKEN)
