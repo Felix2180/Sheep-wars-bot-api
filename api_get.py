@@ -12,6 +12,19 @@ SCRIPT_DIR = Path(__file__).parent.absolute()
 EXCEL_FILE = str(SCRIPT_DIR / "stats.xlsx")
 STAT_ORDER = ["Kills", "Deaths", "K/D", "Wins", "Losses", "W/L"]
 
+def read_api_key_file() -> Optional[str]:
+    """Read API key from API_KEY.txt next to the script, if present."""
+    key_path = SCRIPT_DIR / "API_KEY.txt"
+    if key_path.exists():
+        try:
+            content = key_path.read_text(encoding="utf-8").strip()
+            if content:
+                return content
+        except Exception:
+            # ignore read errors and fall back to other sources
+            pass
+    return None
+
 # -------- Wool Games level calculation --------
 
 def experience_to_level(exp: float) -> int:
@@ -48,9 +61,11 @@ def experience_to_level(exp: float) -> int:
     else:
         # Level 5+ in prestige: 5000 XP each
         remaining_after_first_5 = remaining_xp - 15000
-        level_in_prestige = 5 + int(round(remaining_after_first_5 / 5000))
+        # Use floor division so partial progress doesn't round up to the next level
+        level_in_prestige = 5 + int(remaining_after_first_5 // 5000)
     
-    return prestige_count * 100 + level_in_prestige
+    # Convert to 1-based display level (Hypixel shows levels starting at 1)
+    return prestige_count * 100 + level_in_prestige + 1
 
 # -------- API helpers --------
 
@@ -340,28 +355,21 @@ def api_update_sheet(username: str, api_key: str, snapshot_sections: set[str] | 
         ws.cell(row=row, column=label_col, value=key)
         # All-time value
         ws.cell(row=row, column=at_col, value=current.get(key))
-        # Delta formulas (All-time - Snapshot)
-        at_cell = f"{get_column_letter(at_col)}{row}"
-        # Session
-        sess_snap_addr = f"{get_column_letter(sess_snap_col)}{row}"
-        ws.cell(row=row, column=sess_delta_col, value=f"={at_cell}-{sess_snap_addr}")
+        # Reserve delta and snapshot cells. We'll compute numeric deltas after
+        # snapshot columns are optionally updated below so deltas reflect
+        # the correct (current - snapshot_before_update) values or zero when
+        # snapshot is set to current.
         if new_sheet:
+            # initialize snapshot cells to None for clarity
             ws.cell(row=row, column=sess_snap_col, value=None)
-        # Daily
-        daily_snap_addr = f"{get_column_letter(daily_snap_col)}{row}"
-        ws.cell(row=row, column=daily_delta_col, value=f"={at_cell}-{daily_snap_addr}")
-        if new_sheet:
             ws.cell(row=row, column=daily_snap_col, value=None)
-        # Yesterday
-        yest_snap_addr = f"{get_column_letter(yest_snap_col)}{row}"
-        ws.cell(row=row, column=yest_delta_col, value=f"={at_cell}-{yest_snap_addr}")
-        if new_sheet:
             ws.cell(row=row, column=yest_snap_col, value=None)
-        # Monthly
-        mon_snap_addr = f"{get_column_letter(mon_snap_col)}{row}"
-        ws.cell(row=row, column=mon_delta_col, value=f"={at_cell}-{mon_snap_addr}")
-        if new_sheet:
             ws.cell(row=row, column=mon_snap_col, value=None)
+        # leave delta cells empty for now
+        ws.cell(row=row, column=sess_delta_col, value=None)
+        ws.cell(row=row, column=daily_delta_col, value=None)
+        ws.cell(row=row, column=yest_delta_col, value=None)
+        ws.cell(row=row, column=mon_delta_col, value=None)
 
     # If snapshot flags provided, write snapshot values into appropriate snapshot columns
     snapshot_sections = snapshot_sections or set()
@@ -379,6 +387,61 @@ def api_update_sheet(username: str, api_key: str, snapshot_sections: set[str] | 
     if "monthly" in snapshot_sections:
         write_snapshot_column(mon_snap_col)
 
+    # Compute numeric deltas for each period (current - snapshot). Treat missing
+    # snapshot values as 0. This ensures the bot (which reads cell values)
+    # sees numeric deltas rather than formula strings.
+    for idx, key in enumerate(ordered_keys):
+        row = 2 + idx
+        cur = current.get(key) or 0
+        # Session delta
+        snap_val = ws.cell(row=row, column=sess_snap_col).value
+        try:
+            snap_val = float(snap_val or 0)
+        except Exception:
+            # remove commas and try
+            try:
+                snap_val = float(str(snap_val).replace(",", ""))
+            except Exception:
+                snap_val = 0
+        ws.cell(row=row, column=sess_delta_col, value=(cur - snap_val))
+        # Daily delta
+        snap_val = ws.cell(row=row, column=daily_snap_col).value
+        try:
+            snap_val = float(snap_val or 0)
+        except Exception:
+            try:
+                snap_val = float(str(snap_val).replace(",", ""))
+            except Exception:
+                snap_val = 0
+        ws.cell(row=row, column=daily_delta_col, value=(cur - snap_val))
+        # Yesterday delta
+        snap_val = ws.cell(row=row, column=yest_snap_col).value
+        try:
+            snap_val = float(snap_val or 0)
+        except Exception:
+            try:
+                snap_val = float(str(snap_val).replace(",", ""))
+            except Exception:
+                snap_val = 0
+        ws.cell(row=row, column=yest_delta_col, value=(cur - snap_val))
+        # Monthly delta
+        snap_val = ws.cell(row=row, column=mon_snap_col).value
+        try:
+            snap_val = float(snap_val or 0)
+        except Exception:
+            try:
+                snap_val = float(str(snap_val).replace(",", ""))
+            except Exception:
+                snap_val = 0
+        ws.cell(row=row, column=mon_delta_col, value=(cur - snap_val))
+
+    # Force Excel to recalculate formulas on load so deltas show correctly
+    try:
+        wb.calculation_properties.fullCalcOnLoad = True
+    except Exception:
+        # older openpyxl versions may not have calculation_properties
+        pass
+
     wb.save(EXCEL_FILE)
     return {
         "uuid": uuid,
@@ -390,14 +453,19 @@ def api_update_sheet(username: str, api_key: str, snapshot_sections: set[str] | 
 def main():
     parser = argparse.ArgumentParser(description="API-based Wool Games stats to Excel (horizontal)")
     parser.add_argument("-ign", "--username", required=True, help="Minecraft IGN")
-    parser.add_argument("-key", "--api-key", help="Hypixel API key; env HYPIXEL_API_KEY used if absent")
+    # API key must be provided via API_KEY.txt; no CLI/env flag
     parser.add_argument("-session", action="store_true", help="Write snapshot values into Session block")
     parser.add_argument("-daily", action="store_true", help="Write snapshot values into Daily block")
     parser.add_argument("-yesterday", action="store_true", help="Write snapshot values into Yesterday block")
     parser.add_argument("-monthly", action="store_true", help="Write snapshot values into Monthly block")
     args = parser.parse_args()
 
-    api_key = args.api_key or os.environ.get("HYPIXEL_API_KEY") or "0adb2317-d343-4275-aa22-e7a980eb59df"
+    # Only use the API key from API_KEY.txt (no CLI/env/default fallback)
+    api_key = read_api_key_file()
+    if not api_key:
+        raise RuntimeError(
+            "Missing API key: create API_KEY.txt next to api_get.py containing your Hypixel API key"
+        )
     sections = set()
     if args.session:
         sections.add("session")

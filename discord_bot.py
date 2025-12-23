@@ -8,9 +8,22 @@ import re
 from zoneinfo import ZoneInfo
 import json
 from pathlib import Path
+import io
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except Exception:
+    Image = None
 
 # Get the directory where discord.py is located
 BOT_DIR = Path(__file__).parent.absolute()
+
+# tracked/users + creator info
+TRACKED_FILE = os.path.join(os.path.dirname(__file__), "tracked_users.txt")
+USER_LINKS_FILE = os.path.join(os.path.dirname(__file__), "user_links.json")
+CREATOR_NAME = "chuckegg"
+# Optionally set a numeric Discord user ID for direct DM (recommended for reliability)
+CREATOR_ID = "542467909549555734"
+CREATOR_TZ = ZoneInfo("America/New_York")
 
 # sanitize output for Discord (remove problematic unicode/control chars)
 def sanitize_output(text: str) -> str:
@@ -33,6 +46,26 @@ def sanitize_output(text: str) -> str:
     # Collapse very long whitespace
     text = re.sub(r"\s{3,}", ' ', text)
     return text
+
+
+def _to_number(val):
+    """Coerce worksheet cell values to a numeric type (float).
+
+    Returns 0 for None/empty/unparseable values. Strips commas before parsing.
+    """
+    if val is None:
+        return 0
+    if isinstance(val, (int, float)):
+        return val
+    s = str(val).strip()
+    if s == "":
+        return 0
+    # Remove thousands separators
+    s = s.replace(",", "")
+    try:
+        return float(s)
+    except Exception:
+        return 0
 
 # Helper function to run scripts with proper working directory
 def run_script(script_name, args):
@@ -104,14 +137,6 @@ def format_playtime(seconds: int) -> str:
         else:
             return f"{months} month{'s' if months != 1 else ''}"
 
-# tracked users file and creator identifier
-TRACKED_FILE = os.path.join(os.path.dirname(__file__), "tracked_users.txt")
-USER_LINKS_FILE = os.path.join(os.path.dirname(__file__), "user_links.json")
-CREATOR_NAME = "chuckegg"  # case-insensitive match fallback
-# Optionally set a numeric Discord user ID for direct DM (recommended for reliability)
-# Example: CREATOR_ID = 123456789012345678
-CREATOR_ID = "542467909549555734"
-CREATOR_TZ = ZoneInfo("America/New_York")
 
 # Prestige icons per 100 levels (index 0 = levels 0-99)
 PRESTIGE_ICONS = [
@@ -135,36 +160,36 @@ PRESTIGE_COLORS = {
     800: (255, 85, 255),     # LIGHT_PURPLE (§d)
     900: None,               # Rainbow (special handling)
     1000: (255, 255, 255),   # WHITE (§f)
-    1100: (255, 255, 255),   # WHITE brackets and numbers
-    1200: (255, 85, 85),     # RED brackets and numbers
-    1300: (255, 170, 0),     # GOLD/ORANGE brackets and numbers
-    1400: (255, 255, 85),    # YELLOW brackets and numbers
-    1500: (85, 255, 85),     # GREEN brackets and numbers
-    1600: (85, 255, 255),    # CYAN brackets and numbers
-    1700: (255, 85, 255),    # MAGENTA brackets and numbers
-    1800: (255, 85, 255),    # PINK/MAGENTA brackets and numbers
-    1900: None,              # Rainbow (special handling)
-    2000: (170, 170, 170),   # GRAY/TAN brackets and numbers
-    2100: (255, 255, 255),   # WHITE brackets with gray numbers
-    2200: (255, 85, 85),     # RED brackets with yellow numbers
-    2300: None,              # Rainbow brackets
-    2400: (170, 0, 170),     # PURPLE brackets with green numbers
-    2500: (255, 255, 255),   # WHITE brackets with green numbers
-    2600: (255, 255, 255),   # WHITE brackets with cyan numbers
-    2700: (255, 255, 255),   # WHITE brackets with magenta numbers
-    2800: (255, 85, 85),     # RED brackets with dark red numbers
-    2900: None,              # Rainbow brackets
-    3000: (255, 255, 255),   # WHITE brackets with gray numbers
-    3100: (255, 255, 255),   # WHITE brackets and numbers
-    3200: (255, 85, 85),     # RED brackets and numbers
-    3300: None,              # Rainbow brackets (orange/red/yellow)
-    3400: None,              # Rainbow brackets (yellow/orange)
-    3500: (85, 255, 85),     # GREEN brackets and numbers
-    3600: (85, 255, 255),    # CYAN/BLUE brackets and numbers
-    3700: (255, 255, 255),   # WHITE/YELLOW brackets with magenta numbers
-    3800: None,              # Rainbow brackets (purple/red)
-    3900: None,              # Rainbow brackets (full spectrum)
-    4000: (255, 255, 255),   # WHITE brackets with black numbers
+    1100: (170, 170, 170),   # &7 -> GRAY
+    1200: (255, 85, 85),     # &c -> RED
+    1300: (255, 170, 0),     # &6 -> GOLD
+    1400: (255, 255, 85),    # &e -> YELLOW
+    1500: (85, 255, 85),     # &a -> GREEN
+    1600: (0, 170, 170),     # &3 -> DARK_AQUA
+    1700: (255, 85, 255),    # &d -> LIGHT_PURPLE
+    1800: (170, 0, 170),     # &5 -> DARK_PURPLE
+    1900: (255, 170, 0),     # &6 -> GOLD
+    2000: (0, 170, 0),       # &2 -> DARK_GREEN
+    2100: (170, 170, 170),   # &7 -> GRAY
+    2200: (255, 255, 85),    # &e -> YELLOW
+    2300: (255, 255, 85),    # &e -> YELLOW
+    2400: (85, 255, 255),    # &b -> AQUA
+    2500: (85, 255, 85),     # &a -> GREEN
+    2600: (85, 255, 255),    # &b -> AQUA
+    2700: (255, 85, 255),    # &d -> LIGHT_PURPLE
+    2800: (170, 0, 170),     # &5 -> DARK_PURPLE
+    2900: (170, 0, 170),     # &5 -> DARK_PURPLE
+    3000: (0, 0, 0),         # &0 -> BLACK
+    3100: (255, 255, 255),   # &f -> WHITE
+    3200: (255, 85, 85),     # &c -> RED
+    3300: (255, 170, 0),     # &6 -> GOLD
+    3400: (255, 255, 85),    # &e -> YELLOW
+    3500: (85, 255, 85),     # &a -> GREEN
+    3600: (0, 170, 170),     # &3 -> DARK_AQUA
+    3700: (255, 85, 255),    # &d -> LIGHT_PURPLE
+    3800: (170, 0, 170),     # &5 -> DARK_PURPLE
+    3900: (255, 170, 0),     # &6 -> GOLD
+    4000: (85, 85, 85),      # &8 -> DARK_GRAY
 }
 
 
@@ -173,6 +198,21 @@ def get_prestige_icon(level: int) -> str:
         lvl = int(level)
     except Exception:
         lvl = 0
+    base = (lvl // 100) * 100
+    # If a raw pattern exists and contains an icon, extract it (strip color codes)
+    raw = PRESTIGE_RAW_PATTERNS.get(base)
+    if raw:
+        stripped = re.sub(r'&[0-9a-fA-F]', '', raw)
+        # Look for content inside brackets
+        m = re.search(r"\[(.*?)\]", stripped)
+        if m:
+            inner = m.group(1)
+            # remove leading digits (the level number) to get icon
+            icon = re.sub(r'^[0-9]+', '', inner).strip()
+            if icon:
+                return icon
+
+    # Fallback to PRESTIGE_ICONS list
     idx = max(0, lvl // 100)
     if idx >= len(PRESTIGE_ICONS):
         idx = len(PRESTIGE_ICONS) - 1
@@ -186,17 +226,28 @@ def get_prestige_color(level: int) -> tuple:
         lvl = int(level)
     except Exception:
         lvl = 0
-    
-    # Find the closest prestige level color
+
+    base = (lvl // 100) * 100
+
+    # If a raw pattern exists for this prestige base, prefer its first color code
+    raw = PRESTIGE_RAW_PATTERNS.get(base)
+    if raw:
+        m = re.search(r'&([0-9a-fA-F])', raw)
+        if m:
+            code = m.group(1).lower()
+            hexcol = MINECRAFT_CODE_TO_HEX.get(code)
+            if hexcol:
+                return hex_to_rgb(hexcol)
+
+    # Otherwise fall back to explicit PRESTIGE_COLORS mapping
     for prestige_level in sorted(PRESTIGE_COLORS.keys(), reverse=True):
         if lvl >= prestige_level:
             color = PRESTIGE_COLORS[prestige_level]
             # Handle Rainbow (None) by returning a default color or cycling
             if color is None:
-                # For now, return a vibrant color for rainbow
                 return (255, 100, 200)
             return color
-    
+
     # Fallback to gray if below 0
     return (119, 119, 119)
 
@@ -231,7 +282,503 @@ def make_bold_ansi(code: str) -> str:
     """Convert a basic ANSI color code to bold variant.
     Expects codes like "\u001b[0;33m" and returns "\u001b[1;33m".
     """
-    return code.replace("[0;", "[1;")
+    if not code:
+        return code
+    # If already contains bold flag, return as-is
+    if "1;" in code or "\u001b[1m" in code:
+        return code
+    # If code already contains bold or is empty, return it
+    if not code:
+        return code
+    if "1;" in code or "\u001b[1m" in code:
+        return code
+    # For any CSI like '\x1b[...m', insert '1;' after the '[' if not present
+    m = re.match(r"^(\x1b\[)(?!1;)(.*)m$", code)
+    if m:
+        return f"{m.group(1)}1;{m.group(2)}m"
+    return code
+
+
+# Mapping of Minecraft color codes (§) to approximate ANSI codes for inline coloring
+# Official Minecraft-ish main hex colors for § codes (main hex values)
+MINECRAFT_CODE_TO_HEX = {
+    '0': '#000000',
+    '1': '#0000AA',
+    '2': '#00AA00',
+    '3': '#00AAAA',
+    '4': '#AA0000',
+    '5': '#AA00AA',
+    '6': '#FFAA00',
+    '7': '#AAAAAA',
+    '8': '#555555',
+    '9': '#5555FF',
+    'a': '#55FF55',
+    'b': '#55FFFF',
+    'c': '#FF5555',
+    'd': '#FF55FF',
+    'e': '#FFFF55',
+    'f': '#FFFFFF',
+}
+
+def hex_to_rgb(h: str) -> tuple:
+    h = h.lstrip('#')
+    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+
+def hex_to_ansi(h: str, background: bool = False) -> str:
+    r, g, b = hex_to_rgb(h)
+    if background:
+        return f"\u001b[48;2;{r};{g};{b}m"
+    return f"\u001b[38;2;{r};{g};{b}m"
+
+def rgb_to_ansi256_index(r: int, g: int, b: int) -> int:
+    """Convert RGB 0-255 to xterm-256 color index."""
+    # Grayscale approximation
+    if r == g == b:
+        if r < 8:
+            return 16
+        if r > 248:
+            return 231
+        return 232 + int((r - 8) / 247 * 24)
+
+    # 6x6x6 color cube
+    ri = int(round((r / 255) * 5))
+    gi = int(round((g / 255) * 5))
+    bi = int(round((b / 255) * 5))
+    return 16 + (36 * ri) + (6 * gi) + bi
+
+def rgb_to_ansi256_escape(r: int, g: int, b: int, background: bool = False) -> str:
+    idx = rgb_to_ansi256_index(r, g, b)
+    if background:
+        return f"\u001b[48;5;{idx}m"
+    return f"\u001b[38;5;{idx}m"
+
+def hex_to_ansi256(h: str, background: bool = False) -> str:
+    r, g, b = hex_to_rgb(h)
+    return rgb_to_ansi256_escape(r, g, b, background=background)
+
+# Map Minecraft color codes to chosen xterm-256 indices for clearer, distinct colors
+# These indices were selected to improve visual separation between gold/yellow/green
+_MINECRAFT_256_INDEX = {
+    '0': 16,   # black
+    '1': 19,   # dark_blue
+    '2': 28,   # dark_green
+    '3': 37,   # dark_aqua
+    '4': 124,  # dark_red
+    '5': 127,  # dark_purple
+    '6': 214,  # gold/orange
+    '7': 248,  # gray
+    '8': 239,  # dark_gray
+    '9': 75,   # blue
+    'a': 46,   # bright green
+    'b': 51,   # aqua
+    'c': 203,  # red
+    'd': 201,  # pink
+    'e': 227,  # yellow
+    'f': 15,   # white
+}
+
+MINECRAFT_CODE_TO_ANSI_SGR = {k: f"\u001b[38;5;{idx}m" for k, idx in _MINECRAFT_256_INDEX.items()}
+
+# Keep the 24-bit hex map for embed accent colors
+MINECRAFT_CODE_TO_ANSI = {k: hex_to_ansi(v) for k, v in MINECRAFT_CODE_TO_HEX.items()}
+
+# Patterns for multi-colored prestige prefixes. Key = prestige base (e.g. 1900),
+# For flexibility we store raw Minecraft-style color sequences per prestige.
+# Each string uses '&' followed by hex code, e.g. '&c[&61&e9&a0&30&5✖&d]'.
+# The runtime parser below converts those into (code, text) pieces.
+PRESTIGE_RAW_PATTERNS = {
+    0: "&7[0❤]",
+    100: "&f[100✙]",
+    200: "&c[200✫]",
+    300: "&6[300✈]",
+    400: "&e[400✠]",
+    500: "&a[500♙]",
+    600: "&3[600⚡]",
+    700: "&5[700✠]",
+    800: "&d[800⏹]",
+    900: "&9[&69&e0&20&3✏&d]",
+    1000: "&0[&f1000☯&0]",
+    1100: "&0[&71100☃️&0]",
+    1200: "&0[&c1200۞&0]",
+    1300: "&0[&61300✤&0]",
+    1400: "&0[&e1400♫&0]",
+    1500: "&0[&a1500♚&0]",
+    1600: "&0[&31600❉&0]",
+    1700: "&0[&d1700Σ&0]",
+    1800: "&0[&51800￡&0]",
+    1900: "&c[&61&e9&a0&30&5✖&d]",
+    2000: "&0[2&80&700&f❁]",
+    2100: "&f[2&710&80&0✚]",
+    2200: "&f[2&e20&60&c✯]",
+    2300: "&6[2&e30&a0&b✆]",
+    2400: "&a[2&b40&30&5❥]",
+    2500: "&f[2&a500&2☾⋆⁺]",
+    2600: "&f[2&b60&30⚜&1]",
+    2700: "&f[2&d700&5✦]",
+    2800: "&3[2&580&d0&e⚝]",
+    2900: "&d[&52&39&a0&e0&6✉&c]",
+    3000: "&f[&03&80&00&80&0ツ&f]",
+    3100: "&0[&F3&71&F0&70&F❣&0]",
+    3200: "&0[&c3&42&c0&40&c✮&0]",
+    3300: "&0[&63&c3&60&c0&6✿&0]",
+    3400: "&0[&e3&64&e0&60&e✲&0]",
+    3500: "&0[&a3&25&a0&20&a❂&0]",
+    3600: "&0[&33&16&30&10&3ƒ&0]",
+    3700: "&0[&d3&57&d0&50&d$&0]",
+    3800: "&0[&53&48&50&40&5⋚⋚&0]",
+    3900: "&4[&63&e9&20&10&5Φ&d]",
+    4000: "&0[4&80&70&80&0✌]",
+}
+
+
+def _parse_raw_pattern(raw: str) -> list:
+    """Parse a raw pattern into list of (code, text) pieces."""
+    parts = []
+    cur_code = None
+    buf = ''
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if ch == '&' and i + 1 < len(raw):
+            if buf:
+                parts.append((cur_code or 'f', buf))
+                buf = ''
+            cur_code = raw[i+1].lower()
+            i += 2
+            continue
+        else:
+            buf += ch
+            i += 1
+    if buf:
+        parts.append((cur_code or 'f', buf))
+    return parts
+
+
+def _render_text_segments_to_image(segments: list, font=None, padding=(8,6)) -> io.BytesIO:
+    """Render colored text segments to a PNG and return a BytesIO."""
+    if Image is None:
+        raise RuntimeError("Pillow not available")
+    if font is None:
+        try:
+            font = ImageFont.truetype("DejaVuSans.ttf", 18)
+        except Exception:
+            font = ImageFont.load_default()
+
+    # Measure total size
+    total_w = 0
+    max_h = 0
+    draw_dummy = ImageDraw.Draw(Image.new('RGBA', (1,1)))
+    for color_hex, text in segments:
+        bbox = draw_dummy.textbbox((0, 0), text, font=font)
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
+        total_w += w
+        max_h = max(max_h, h)
+
+    img_w = total_w + padding[0]*2
+    img_h = max_h + padding[1]*2
+    img = Image.new('RGBA', (img_w, img_h), (0,0,0,0))
+    draw = ImageDraw.Draw(img)
+
+    x = padding[0]
+    y = padding[1]
+    for color_hex, text in segments:
+        try:
+            color = tuple(int(color_hex.lstrip('#')[i:i+2], 16) for i in (0,2,4))
+        except Exception:
+            color = (255,255,255)
+        draw.text((x,y), text, font=font, fill=color)
+        bbox = draw.textbbox((x, y), text, font=font)
+        w = bbox[2] - bbox[0]
+        x += w
+
+    out = io.BytesIO()
+    img.save(out, format='PNG')
+    out.seek(0)
+    return out
+
+
+def render_prestige_range_image(base: int, end_display: int) -> io.BytesIO:
+    """Render an image showing the colored start and end prestige brackets from raw pattern."""
+    raw = PRESTIGE_RAW_PATTERNS.get(base)
+    if not raw:
+        # Fallback to simple text
+        parts = [(MINECRAFT_CODE_TO_HEX.get('f', '#FFFFFF'), f'[{base}] - [{end_display}]')]
+        return _render_text_segments_to_image(parts)
+
+    parts = _parse_raw_pattern(raw)
+
+    def _build_replaced_segments(parts, replacement_str, rainbow=False):
+        """Replace the first numeric span in the concatenated parts with replacement_str once, preserving color segments.
+
+        If `rainbow` is True, expand the replacement into per-character colored segments cycling a rainbow palette.
+        """
+        concat = ''.join(t for (_, t) in parts)
+        m = re.search(r"\d+", concat)
+        if not m:
+            return [(MINECRAFT_CODE_TO_HEX.get(code.lower(), '#FFFFFF'), text) for code, text in parts]
+
+        num_start, num_end = m.start(), m.end()
+        out_parts = []
+        pos = 0
+        replaced = False
+        for code, text in parts:
+            part_start = pos
+            part_end = pos + len(text)
+            pos = part_end
+            hexcol = MINECRAFT_CODE_TO_HEX.get(code.lower(), '#FFFFFF')
+
+            if part_end <= num_start or part_start >= num_end:
+                out_parts.append((hexcol, text))
+                continue
+
+            # prefix
+            prefix_len = max(0, num_start - part_start)
+            if prefix_len > 0:
+                prefix = text[:prefix_len]
+                out_parts.append((hexcol, prefix))
+
+            # replacement
+            if not replaced:
+                if rainbow:
+                    # Build the original color sequence that covered the numeric span
+                    colors_in_span = []
+                    span_pos = 0
+                    # Re-iterate to collect per-char colors within the numeric span
+                    pos2 = 0
+                    for c_code, c_text in parts:
+                        part_s = pos2
+                        part_e = pos2 + len(c_text)
+                        pos2 = part_e
+                        overlap_s = max(part_s, num_start)
+                        overlap_e = min(part_e, num_end)
+                        if overlap_e > overlap_s:
+                            hex_here = MINECRAFT_CODE_TO_HEX.get(c_code.lower(), '#FFFFFF')
+                            # number of covered chars in original
+                            count = overlap_e - overlap_s
+                            colors_in_span.extend([hex_here] * count)
+
+                    if not colors_in_span:
+                        # fallback rainbow cycle
+                        RAINBOW_CODES = ['c', '6', 'e', 'a', 'b', 'd', '9', '3']
+                        colors_in_span = [MINECRAFT_CODE_TO_HEX.get(code, '#FFFFFF') for code in RAINBOW_CODES]
+
+                    # Apply colors across the replacement string, repeating as needed
+                    repl = str(replacement_str)
+                    for i, ch in enumerate(repl):
+                        col = colors_in_span[i % len(colors_in_span)]
+                        out_parts.append((col, ch))
+                else:
+                    out_parts.append((hexcol, replacement_str))
+                replaced = True
+
+            # suffix
+            suffix_start_in_part = max(0, num_end - part_start)
+            if suffix_start_in_part < len(text):
+                suffix = text[suffix_start_in_part:]
+                out_parts.append((hexcol, suffix))
+
+        return out_parts
+
+    # Choose fallback icons for bases where emoji fonts may be missing
+    BAD_ICON_BASES = {800, 1200, 1800, 2800, 3800}
+
+    # Determine if this prestige base should be rainbow (PRESTIGE_COLORS maps to None)
+    rainbow_bases = {k for k, v in PRESTIGE_COLORS.items() if v is None}
+
+    start_segments = _build_replaced_segments(parts, str(base), rainbow=(base in rainbow_bases))
+    end_segments = _build_replaced_segments(parts, str(end_display), rainbow=(end_display in rainbow_bases))
+
+    # If problematic base, replace any non-ascii icon with fallback from PRESTIGE_ICONS
+    if base in BAD_ICON_BASES or end_display in BAD_ICON_BASES:
+        def _replace_bad_icons(segments, base_val):
+            res = []
+            for col, txt in segments:
+                # replace any non-basic symbol at end inside brackets with fallback
+                newtxt = re.sub(r"\[(\s*\d+)([^\d\]]+)\]", lambda m: f"[{m.group(1)}{PRESTIGE_ICONS[(base_val//100) % len(PRESTIGE_ICONS)]}]", txt)
+                res.append((col, newtxt))
+            return res
+        start_segments = _replace_bad_icons(start_segments, base)
+        end_segments = _replace_bad_icons(end_segments, base)
+
+    combined = []
+    combined.extend(start_segments)
+    combined.append((MINECRAFT_CODE_TO_HEX.get('f', '#FFFFFF'), ' \u0013 '))
+    combined.extend(end_segments)
+
+    return _render_text_segments_to_image(combined)
+
+
+def render_all_prestiges_combined(spacing: int = 6) -> io.BytesIO:
+    """Render all prestiges as individual images and combine them vertically into one PNG."""
+    if Image is None:
+        raise RuntimeError("Pillow not available")
+
+    # Build a 4-column layout where columns are offsets [0,1000,2000,3000]
+    offsets = [0, 1000, 2000, 3000]
+
+    # Rows are the base mods 0,100,...,900 (we limit to prestiges up to 4000)
+    base_mods = [i * 100 for i in range(0, 10)]
+
+    # Prepare grid of images (rows x cols). Use placeholder transparent images for missing cells.
+    grid = []
+    for base_mod in base_mods:
+        row_imgs = []
+        for off in offsets:
+            key = base_mod + off
+            if key in PRESTIGE_RAW_PATTERNS:
+                try:
+                    imgio = render_prestige_range_image(key, key + 99)
+                    imgio.seek(0)
+                    im = Image.open(imgio).convert('RGBA')
+                except Exception:
+                    im = Image.new('RGBA', (200, 40), (0,0,0,0))
+            else:
+                im = Image.new('RGBA', (200, 40), (0,0,0,0))
+            row_imgs.append(im)
+        grid.append(row_imgs)
+
+    # Compute uniform cell size
+    max_w = max((im.width for row in grid for im in row), default=200)
+    max_h = max((im.height for row in grid for im in row), default=40)
+
+    # Optional title at the top
+    title_text = "Wool Games prestiges 0-4000"
+    try:
+        title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 22)
+    except Exception:
+        title_font = ImageFont.load_default()
+    title_bbox = Image.new('RGBA', (1,1))
+    draw_tmp = ImageDraw.Draw(title_bbox)
+    tb = draw_tmp.textbbox((0,0), title_text, font=title_font)
+    title_h = tb[3] - tb[1] + 12
+
+    cols = len(offsets)
+    rows = len(grid)
+
+    total_w = cols * max_w + spacing * (cols - 1)
+    total_h = title_h + rows * max_h + spacing * (rows - 1)
+
+    combined = Image.new('RGBA', (total_w, total_h), (0,0,0,0))
+
+    # Draw title centered with subtle shadow
+    draw = ImageDraw.Draw(combined)
+    title_x = (total_w) // 2
+    draw.text((title_x+1, 6), title_text, font=title_font, fill=(0,0,0), anchor='mm')
+    draw.text((title_x, 5), title_text, font=title_font, fill=(220,220,220), anchor='mm')
+
+    y = title_h
+    for row in grid:
+        x = 0
+        for im in row:
+            # center each image within its cell
+            paste_x = x + (max_w - im.width) // 2
+            paste_y = y + (max_h - im.height) // 2
+            combined.paste(im, (paste_x, paste_y), im)
+            x += max_w + spacing
+        y += max_h + spacing
+
+    out = io.BytesIO()
+    combined.save(out, format='PNG')
+    out.seek(0)
+    return out
+
+
+
+def format_prestige_ansi(level: int, icon: str) -> str:
+    """Return an ANSI-colored prestige bracket+level+icon string.
+
+    If a multi-color pattern exists for the prestige base (e.g. 1900), use it;
+    otherwise color the whole bracket using the single prestige color.
+    """
+    reset = "\u001b[0m"
+    try:
+        lvl = int(level)
+    except Exception:
+        lvl = 0
+    base = (lvl // 100) * 100
+    # If a raw pattern exists, parse it into (code, text) pieces
+    if base in PRESTIGE_RAW_PATTERNS:
+        raw = PRESTIGE_RAW_PATTERNS[base]
+        parts = []
+        cur_code = None
+        buf = ''
+        i = 0
+        while i < len(raw):
+            ch = raw[i]
+            if ch == '&' and i + 1 < len(raw):
+                # flush buf
+                if buf:
+                    parts.append((cur_code or 'f', buf))
+                    buf = ''
+                cur_code = raw[i+1].lower()
+                i += 2
+                continue
+            else:
+                buf += ch
+                i += 1
+        if buf:
+            parts.append((cur_code or 'f', buf))
+
+        out = []
+        for code, text in parts:
+            # Use chosen xterm-256 SGR for inline/code-block rendering
+            sgr = MINECRAFT_CODE_TO_ANSI_SGR.get(code.lower(), "\u001b[37m")
+            out.append(make_bold_ansi(sgr) + text)
+
+        joined = ''.join(out) + reset
+        # When a raw pattern exists we trust it includes the correct icon and colors.
+        return joined
+
+    # Fallback: color whole bracket with single color for the level
+    ansi = get_ansi_color_code(level)
+    bold = make_bold_ansi(ansi)
+    return f"{bold}[{level}{icon}]{reset}"
+
+
+async def _send_paged_ansi_followups(interaction: discord.Interaction, lines: list[str], block: str = 'ansi'):
+    """Send potentially-long ANSI lines as one or more followup messages, each <= 2000 chars.
+
+    Splits `lines` into code-block chunks and sends them via `interaction.followup.send`.
+    Falls back to sanitized plain text if sending fails.
+    """
+    wrapper_open = f"```{block}\n"
+    wrapper_close = "\n```"
+    max_len = 2000
+
+    chunks = []
+    cur_lines = []
+    # start with the wrapper overhead
+    cur_len = len(wrapper_open) + len(wrapper_close)
+
+    for ln in lines:
+        ln_with_nl = ln + "\n"
+        lnlen = len(ln_with_nl)
+        if cur_len + lnlen > max_len:
+            # flush current chunk
+            if cur_lines:
+                chunks.append("".join(cur_lines).rstrip('\n'))
+            cur_lines = [ln_with_nl]
+            cur_len = len(wrapper_open) + len(wrapper_close) + lnlen
+        else:
+            cur_lines.append(ln_with_nl)
+            cur_len += lnlen
+
+    if cur_lines:
+        chunks.append("".join(cur_lines).rstrip('\n'))
+
+    # Send chunks as followups
+    for chunk in chunks:
+        content = wrapper_open + chunk + wrapper_close
+        try:
+            await interaction.followup.send(content)
+        except Exception:
+            # fallback: send sanitized text without ANSI wrapper
+            try:
+                await interaction.followup.send(sanitize_output(chunk))
+            except Exception:
+                # give up silently
+                pass
 
 def load_tracked_users():
     if not os.path.exists(TRACKED_FILE):
@@ -412,10 +959,11 @@ class StatsTabView(discord.ui.View):
         # Column mappings for each period
         self.column_map = {
             "all-time": "B",      # All-time values
-            "session": "D",       # Session Snapshot
-            "daily": "F",         # Daily Snapshot
-            "yesterday": "H",     # Yesterday Snapshot
-            "monthly": "J",       # Monthly Snapshot
+            # Use the DELTA columns so the bot shows session/daily/yesterday/monthly changes
+            "session": "C",       # Session Delta
+            "daily": "E",         # Daily Delta
+            "yesterday": "G",     # Yesterday Delta
+            "monthly": "I",       # Monthly Delta
         }
         self.update_buttons()
 
@@ -447,31 +995,29 @@ class StatsTabView(discord.ui.View):
     
     def get_stats_embed(self, tab_name):
         col = self.column_map[tab_name]
-        
-        # Get values from the appropriate column
-        kills = self.sheet[f"{col}{self.stat_rows['kills']}"].value or 0
-        deaths = self.sheet[f"{col}{self.stat_rows['deaths']}"].value or 0
-        wins = self.sheet[f"{col}{self.stat_rows['wins']}"].value or 0
-        losses = self.sheet[f"{col}{self.stat_rows['losses']}"].value or 0
+
+        # Get values from the appropriate column and coerce to numbers
+        kills = _to_number(self.sheet[f"{col}{self.stat_rows['kills']}"].value)
+        deaths = _to_number(self.sheet[f"{col}{self.stat_rows['deaths']}"].value)
+        wins = _to_number(self.sheet[f"{col}{self.stat_rows['wins']}"].value)
+        losses = _to_number(self.sheet[f"{col}{self.stat_rows['losses']}"].value)
         
         # Calculate K/D and W/L ratios dynamically
         kd_ratio = round(kills / deaths, 2) if deaths > 0 else kills
         wl_ratio = round(wins / losses, 2) if losses > 0 else wins
         
-        # Get prestige color based on level
+        # Get prestige color based on level (for embed accent)
         prestige_color = get_prestige_color(self.level_value)
-        ansi_code = get_ansi_color_code(self.level_value)
-        bold_code = make_bold_ansi(ansi_code)
-        reset_code = "\u001b[0;0m"
-        
+        reset_code = "\u001b[0m"
+
         embed = discord.Embed(
             title="",
             color=discord.Color.from_rgb(*prestige_color)
         )
-        
-        # Add colored level display with full title as a full-width field
-        # Both level and icon inside brackets are bold and colored
-        colored_title = f"[{bold_code}{self.level_value}{self.prestige_icon}{reset_code}] {self.ign} - {tab_name.title()} Stats"
+
+        # Build colored level+icon display (supports multi-color prefixes)
+        colored_prefix = format_prestige_ansi(self.level_value, self.prestige_icon)
+        colored_title = f"{colored_prefix} {self.ign} - {tab_name.title()} Stats"
         embed.add_field(name="", value=f"```ansi\n{colored_title}```", inline=False)
         
         # Add 6 inline fields: label as field name, data in compact code block
@@ -532,10 +1078,11 @@ class LeaderboardView(discord.ui.View):
         # Column mappings for each period
         self.column_map = {
             "lifetime": "B",      # All-time values
-            "session": "D",       # Session Snapshot
-            "daily": "F",         # Daily Snapshot
-            "yesterday": "H",     # Yesterday Snapshot
-            "monthly": "J",       # Monthly Snapshot
+            # Use the DELTA columns for period comparisons
+            "session": "C",       # Session Delta
+            "daily": "E",         # Daily Delta
+            "yesterday": "G",     # Yesterday Delta
+            "monthly": "I",       # Monthly Delta
         }
         
         self.metric_labels = {
@@ -597,19 +1144,19 @@ class LeaderboardView(discord.ui.View):
                 metric_value = None
                 
                 if self.metric == "kdr":
-                    kills = sheet[f"{col}{stat_rows.get('kills', 1)}"].value or 0
-                    deaths = sheet[f"{col}{stat_rows.get('deaths', 1)}"].value or 0
+                    kills = _to_number(sheet[f"{col}{stat_rows.get('kills', 1)}"].value)
+                    deaths = _to_number(sheet[f"{col}{stat_rows.get('deaths', 1)}"].value)
                     metric_value = round(kills / deaths, 2) if deaths > 0 else kills
                 elif self.metric == "wlr":
-                    wins = sheet[f"{col}{stat_rows.get('wins', 1)}"].value or 0
-                    losses = sheet[f"{col}{stat_rows.get('losses', 1)}"].value or 0
+                    wins = _to_number(sheet[f"{col}{stat_rows.get('wins', 1)}"].value)
+                    losses = _to_number(sheet[f"{col}{stat_rows.get('losses', 1)}"].value)
                     metric_value = round(wins / losses, 2) if losses > 0 else wins
                 else:
                     # Find the stat row for this metric
                     metric_key = self.metric
                     if metric_key in stat_rows:
-                        value = sheet[f"{col}{stat_rows[metric_key]}"].value or 0
-                        metric_value = value
+                        value = sheet[f"{col}{stat_rows[metric_key]}"].value
+                        metric_value = _to_number(value)
                 
                 if metric_value is not None and isinstance(metric_value, (int, float)):
                     # Get level for prestige display
@@ -656,7 +1203,7 @@ class LeaderboardView(discord.ui.View):
             # Top 10 with colored prestige prefix
             description_lines = []
             ansi_code = get_ansi_color_code
-            reset_code = "\u001b[0;0m"
+            reset_code = "\u001b[0m"
             
             for i, entry in enumerate(leaderboard[:10], 1):
                 player = entry[0]
@@ -666,9 +1213,8 @@ class LeaderboardView(discord.ui.View):
                 icon = entry[5]
                 
                 medal = {1: "1.", 2: "2.", 3: "3."}.get(i, f"{i}.")
-                color_code = ansi_code(level_value)
-                bold_code = make_bold_ansi(color_code)
-                prestige_display = f"{bold_code}[{level_value}{icon}]{reset_code}"
+                # Use multi-color formatter for leaderboard prefix
+                prestige_display = format_prestige_ansi(level_value, icon)
                 
                 # Format value based on type
                 if is_playtime:
@@ -1182,6 +1728,44 @@ async def death_leaderboard(interaction: discord.Interaction, metric: discord.ap
         view = LeaderboardView(metric.value, wb)
         embed = view.get_leaderboard_embed("lifetime")
         await interaction.followup.send(embed=embed, view=view)
+    except Exception as e:
+        await interaction.followup.send(f"[ERROR] {str(e)}")
+
+
+@bot.tree.command(name="prestiges", description="List all prestige prefixes with their colors")
+async def prestiges(interaction: discord.Interaction):
+    # Defer in case composing takes a moment
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.defer()
+        except (discord.errors.NotFound, discord.errors.HTTPException):
+            return
+    try:
+        # Use image rendering if Pillow is available
+        if Image is not None:
+            try:
+                combined = render_all_prestiges_combined()
+                await interaction.followup.send(file=discord.File(combined, filename="Wool Games prestiges 0-4000.png"))
+            except Exception:
+                # If combining fails, fall back to sending individual images
+                for base in sorted(PRESTIGE_RAW_PATTERNS.keys()):
+                    end_display = base + 99
+                    try:
+                        imgio = render_prestige_range_image(base, end_display)
+                        fname = f"prestige_{base}.png"
+                        await interaction.followup.send(file=discord.File(imgio, filename=fname))
+                    except Exception:
+                        start_str = format_prestige_ansi(base, '')
+                        end_str = format_prestige_ansi(end_display, '')
+                        await interaction.followup.send(f"{start_str} - {end_str}")
+        else:
+            # Pillow not installed; fallback to ANSI list
+            lines = []
+            for base in sorted(PRESTIGE_RAW_PATTERNS.keys()):
+                start_str = format_prestige_ansi(base, '')
+                end_str = format_prestige_ansi(base + 99, '')
+                lines.append(f"{start_str} - {end_str}")
+            await _send_paged_ansi_followups(interaction, lines, block='ansi')
     except Exception as e:
         await interaction.followup.send(f"[ERROR] {str(e)}")
 
