@@ -20,6 +20,7 @@ BOT_DIR = Path(__file__).parent.absolute()
 # tracked/users + creator info
 TRACKED_FILE = os.path.join(os.path.dirname(__file__), "tracked_users.txt")
 USER_LINKS_FILE = os.path.join(os.path.dirname(__file__), "user_links.json")
+USER_COLORS_FILE = os.path.join(os.path.dirname(__file__), "user_colors.json")
 CREATOR_NAME = "chuckegg"
 # Optionally set a numeric Discord user ID for direct DM (recommended for reliability)
 CREATOR_ID = "542467909549555734"
@@ -454,11 +455,12 @@ def _parse_raw_pattern(raw: str) -> list:
     return parts
 
 
-def render_prestige_with_text(level: int, icon: str, ign: str, suffix: str = "") -> io.BytesIO:
+def render_prestige_with_text(level: int, icon: str, ign: str, suffix: str = "", ign_color: str = None) -> io.BytesIO:
     """Render a prestige prefix with IGN and optional suffix text (e.g., ' - All-time Stats').
     
     Returns a BytesIO containing the rendered PNG image.
     If Pillow is not available, raises RuntimeError.
+    ign_color: Hex color code for the IGN (e.g., '#FF5555')
     """
     if Image is None:
         raise RuntimeError("Pillow not available")
@@ -540,8 +542,9 @@ def render_prestige_with_text(level: int, icon: str, ign: str, suffix: str = "")
         hexcol = '#{:02x}{:02x}{:02x}'.format(*color)
         segments = [(hexcol, f"[{level}{icon}]")]
     
-    # Add IGN and suffix
-    segments.append((MINECRAFT_CODE_TO_HEX.get('f', '#FFFFFF'), f" {ign}"))
+    # Add IGN with custom color if specified
+    ign_hex = ign_color if ign_color else MINECRAFT_CODE_TO_HEX.get('f', '#FFFFFF')
+    segments.append((ign_hex, f" {ign}"))
     if suffix:
         segments.append((MINECRAFT_CODE_TO_HEX.get('f', '#FFFFFF'), suffix))
     
@@ -588,6 +591,103 @@ def _render_text_segments_to_image(segments: list, font=None, padding=(8,6)) -> 
 
     out = io.BytesIO()
     img.save(out, format='PNG')
+    out.seek(0)
+    return out
+
+
+def render_stat_box(label: str, value: str, width: int = 200, height: int = 80):
+    """Render a single stat box with label and value on black background."""
+    if Image is None:
+        raise RuntimeError("Pillow not available")
+    
+    img = Image.new('RGB', (width, height), (0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    
+    try:
+        label_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 16)
+        value_font = ImageFont.truetype("DejaVuSans.ttf", 24)
+    except Exception:
+        try:
+            label_font = ImageFont.truetype("DejaVuSans.ttf", 16)
+            value_font = ImageFont.truetype("DejaVuSans.ttf", 24)
+        except Exception:
+            label_font = ImageFont.load_default()
+            value_font = ImageFont.load_default()
+    
+    # Draw label (centered horizontally, near top)
+    label_bbox = draw.textbbox((0, 0), label, font=label_font)
+    label_w = label_bbox[2] - label_bbox[0]
+    label_x = (width - label_w) // 2
+    draw.text((label_x, 15), label, font=label_font, fill=(200, 200, 200))
+    
+    # Draw value (centered horizontally, below label)
+    value_bbox = draw.textbbox((0, 0), value, font=value_font)
+    value_w = value_bbox[2] - value_bbox[0]
+    value_x = (width - value_w) // 2
+    draw.text((value_x, 45), value, font=value_font, fill=(255, 255, 255))
+    
+    return img
+
+
+def create_stats_composite_image(level: int, icon: str, ign: str, tab_name: str, 
+                                  wins: int, losses: int, wl_ratio: float,
+                                  kills: int, deaths: int, kd_ratio: float, ign_color: str = None) -> io.BytesIO:
+    """Create a composite image with title and 2x3 grid of stats."""
+    if Image is None:
+        raise RuntimeError("Pillow not available")
+    
+    # Generate title image with custom username color
+    suffix = f" - {tab_name.title()} Stats"
+    title_io = render_prestige_with_text(level, icon, ign, suffix, ign_color)
+    title_img = Image.open(title_io)
+    
+    # Generate stat boxes
+    stat_width = 200
+    stat_height = 80
+    spacing = 10
+    
+    stat_boxes = [
+        render_stat_box("Wins", str(wins), stat_width, stat_height),
+        render_stat_box("Losses", str(losses), stat_width, stat_height),
+        render_stat_box("W/L Ratio", str(wl_ratio), stat_width, stat_height),
+        render_stat_box("Kills", str(kills), stat_width, stat_height),
+        render_stat_box("Deaths", str(deaths), stat_width, stat_height),
+        render_stat_box("K/D Ratio", str(kd_ratio), stat_width, stat_height),
+    ]
+    
+    # Calculate composite dimensions
+    grid_width = stat_width * 3 + spacing * 2
+    grid_height = stat_height * 2 + spacing
+    
+    # Scale title to match grid width
+    scale_factor = grid_width / title_img.width
+    new_title_width = grid_width
+    new_title_height = int(title_img.height * scale_factor)
+    title_img = title_img.resize((new_title_width, new_title_height), Image.LANCZOS)
+    
+    composite_width = grid_width
+    bottom_padding = 20  # Extra space at bottom
+    composite_height = new_title_height + spacing + grid_height + bottom_padding
+    
+    # Create composite image with black background
+    composite = Image.new('RGB', (composite_width, composite_height), (0, 0, 0))
+    
+    # Paste title (now full width)
+    composite.paste(title_img, (0, 0), title_img if title_img.mode == 'RGBA' else None)
+    
+    # Paste stat boxes in 2x3 grid (no offset needed since grid matches width)
+    y_offset = new_title_height + spacing
+    
+    for i, stat_box in enumerate(stat_boxes):
+        row = i // 3
+        col = i % 3
+        x = col * (stat_width + spacing)
+        y = y_offset + row * (stat_height + spacing)
+        composite.paste(stat_box, (x, y))
+    
+    # Save to BytesIO
+    out = io.BytesIO()
+    composite.save(out, format='PNG')
     out.seek(0)
     return out
 
@@ -1047,6 +1147,16 @@ class StatsTabView(discord.ui.View):
         self.prestige_icon = prestige_icon
         self.current_tab = "all-time"
         
+        # Load custom color for this username
+        self.ign_color = None
+        try:
+            if os.path.exists(USER_COLORS_FILE):
+                with open(USER_COLORS_FILE, 'r') as f:
+                    color_data = json.load(f)
+                    self.ign_color = color_data.get(ign.lower())
+        except Exception as e:
+            print(f"[WARNING] Failed to load color for {ign}: {e}")
+        
         # Find rows dynamically by searching column A for stat names
         self.stat_rows = self._find_stat_rows()
         
@@ -1099,60 +1209,51 @@ class StatsTabView(discord.ui.View):
         # Calculate K/D and W/L ratios dynamically
         kd_ratio = round(kills / deaths, 2) if deaths > 0 else kills
         wl_ratio = round(wins / losses, 2) if losses > 0 else wins
-        
-        # Get prestige color based on level (for embed accent)
-        prestige_color = get_prestige_color(self.level_value)
 
-        embed = discord.Embed(
-            title="",
-            color=discord.Color.from_rgb(*prestige_color)
-        )
+        embed = discord.Embed(title="")
         
-        # Add 6 inline fields: label as field name, data in compact code block
-        embed.add_field(name="Wins", value=f"```{str(wins)}```", inline=True)
-        embed.add_field(name="Losses", value=f"```{str(losses)}```", inline=True)
-        embed.add_field(name="W/L Ratio", value=f"```{str(wl_ratio)}```", inline=True)
-
-        embed.add_field(name="Kills", value=f"```{str(kills)}```", inline=True)
-        embed.add_field(name="Deaths", value=f"```{str(deaths)}```", inline=True)
-        embed.add_field(name="K/D Ratio", value=f"```{str(kd_ratio)}```", inline=True)
+        return embed, wins, losses, wl_ratio, kills, deaths, kd_ratio
+    
+    def generate_composite_image(self, tab_name):
+        """Generate composite image with title and stats."""
+        embed, wins, losses, wl_ratio, kills, deaths, kd_ratio = self.get_stats_embed(tab_name)
         
-        return embed
-    
-    def get_title_file(self):
-        """Generate title image file."""
-        if Image is None:
-            return None
-        try:
-            suffix = f" - {self.current_tab.title()} Stats"
-            img_io = render_prestige_with_text(self.level_value, self.prestige_icon, self.ign, suffix)
-            return discord.File(img_io, filename=f"{self.ign}_{self.current_tab}_title.png")
-        except Exception as e:
-            print(f"[WARNING] Title image rendering failed: {e}")
-            return None
-    
-    def add_title_to_embed(self, embed):
-        """Add title to embed, either as image or ANSI text."""
-        title_file = self.get_title_file()
-        if title_file:
-            embed.set_image(url=f"attachment://{self.ign}_{self.current_tab}_title.png")
-            return title_file
+        if Image is not None:
+            try:
+                img_io = create_stats_composite_image(
+                    self.level_value, self.prestige_icon, self.ign, tab_name,
+                    wins, losses, wl_ratio, kills, deaths, kd_ratio, self.ign_color
+                )
+                filename = f"{self.ign}_{tab_name}_stats.png"
+                # Return None for embed to avoid border
+                return None, discord.File(img_io, filename=filename)
+            except Exception as e:
+                print(f"[WARNING] Composite image generation failed: {e}")
+                # Fallback to text fields
+                embed.add_field(name="Wins", value=f"```{str(wins)}```", inline=True)
+                embed.add_field(name="Losses", value=f"```{str(losses)}```", inline=True)
+                embed.add_field(name="W/L Ratio", value=f"```{str(wl_ratio)}```", inline=True)
+                embed.add_field(name="Kills", value=f"```{str(kills)}```", inline=True)
+                embed.add_field(name="Deaths", value=f"```{str(deaths)}```", inline=True)
+                embed.add_field(name="K/D Ratio", value=f"```{str(kd_ratio)}```", inline=True)
+                return embed, None
         else:
-            # Fallback to ANSI text
-            colored_prefix = format_prestige_ansi(self.level_value, self.prestige_icon)
-            colored_title = f"{colored_prefix} {self.ign} - {self.current_tab.title()} Stats"
-            # Insert at beginning
-            embed.insert_field_at(0, name="", value=f"```ansi\n{colored_title}```", inline=False)
-            return None
+            # Fallback to text fields if Pillow not available
+            embed.add_field(name="Wins", value=f"```{str(wins)}```", inline=True)
+            embed.add_field(name="Losses", value=f"```{str(losses)}```", inline=True)
+            embed.add_field(name="W/L Ratio", value=f"```{str(wl_ratio)}```", inline=True)
+            embed.add_field(name="Kills", value=f"```{str(kills)}```", inline=True)
+            embed.add_field(name="Deaths", value=f"```{str(deaths)}```", inline=True)
+            embed.add_field(name="K/D Ratio", value=f"```{str(kd_ratio)}```", inline=True)
+            return embed, None
     
     @discord.ui.button(label="All-time", custom_id="all-time", style=discord.ButtonStyle.primary)
     async def all_time_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.current_tab = "all-time"
         self.update_buttons()
-        embed = self.get_stats_embed(self.current_tab)
-        title_file = self.add_title_to_embed(embed)
-        if title_file:
-            await interaction.response.send_message(embed=embed, view=self, file=title_file)
+        embed, file = self.generate_composite_image(self.current_tab)
+        if file:
+            await interaction.response.edit_message(view=self, attachments=[file])
         else:
             await interaction.response.edit_message(embed=embed, view=self)
     
@@ -1160,10 +1261,9 @@ class StatsTabView(discord.ui.View):
     async def session_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.current_tab = "session"
         self.update_buttons()
-        embed = self.get_stats_embed(self.current_tab)
-        title_file = self.add_title_to_embed(embed)
-        if title_file:
-            await interaction.response.send_message(embed=embed, view=self, file=title_file)
+        embed, file = self.generate_composite_image(self.current_tab)
+        if file:
+            await interaction.response.edit_message(view=self, attachments=[file])
         else:
             await interaction.response.edit_message(embed=embed, view=self)
     
@@ -1171,10 +1271,9 @@ class StatsTabView(discord.ui.View):
     async def daily_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.current_tab = "daily"
         self.update_buttons()
-        embed = self.get_stats_embed(self.current_tab)
-        title_file = self.add_title_to_embed(embed)
-        if title_file:
-            await interaction.response.send_message(embed=embed, view=self, file=title_file)
+        embed, file = self.generate_composite_image(self.current_tab)
+        if file:
+            await interaction.response.edit_message(view=self, attachments=[file])
         else:
             await interaction.response.edit_message(embed=embed, view=self)
     
@@ -1182,10 +1281,9 @@ class StatsTabView(discord.ui.View):
     async def yesterday_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.current_tab = "yesterday"
         self.update_buttons()
-        embed = self.get_stats_embed(self.current_tab)
-        title_file = self.add_title_to_embed(embed)
-        if title_file:
-            await interaction.response.send_message(embed=embed, view=self, file=title_file)
+        embed, file = self.generate_composite_image(self.current_tab)
+        if file:
+            await interaction.response.edit_message(view=self, attachments=[file])
         else:
             await interaction.response.edit_message(embed=embed, view=self)
     
@@ -1193,10 +1291,9 @@ class StatsTabView(discord.ui.View):
     async def monthly_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.current_tab = "monthly"
         self.update_buttons()
-        embed = self.get_stats_embed(self.current_tab)
-        title_file = self.add_title_to_embed(embed)
-        if title_file:
-            await interaction.response.send_message(embed=embed, view=self, file=title_file)
+        embed, file = self.generate_composite_image(self.current_tab)
+        if file:
+            await interaction.response.edit_message(view=self, attachments=[file])
         else:
             await interaction.response.edit_message(embed=embed, view=self)
 
@@ -1618,6 +1715,67 @@ async def unclaim(interaction: discord.Interaction, ign: str):
     except Exception as e:
         await interaction.followup.send(f"[ERROR] Failed to unclaim: {str(e)}")
 
+# Create color choices from MINECRAFT_CODE_TO_HEX
+COLOR_CHOICES = [
+    discord.app_commands.Choice(name="Black", value="0"),
+    discord.app_commands.Choice(name="Dark Blue", value="1"),
+    discord.app_commands.Choice(name="Dark Green", value="2"),
+    discord.app_commands.Choice(name="Dark Aqua", value="3"),
+    discord.app_commands.Choice(name="Dark Red", value="4"),
+    discord.app_commands.Choice(name="Dark Purple", value="5"),
+    discord.app_commands.Choice(name="Gold", value="6"),
+    discord.app_commands.Choice(name="Gray", value="7"),
+    discord.app_commands.Choice(name="Dark Gray", value="8"),
+    discord.app_commands.Choice(name="Blue", value="9"),
+    discord.app_commands.Choice(name="Green", value="a"),
+    discord.app_commands.Choice(name="Aqua", value="b"),
+    discord.app_commands.Choice(name="Red", value="c"),
+    discord.app_commands.Choice(name="Light Purple/Pink", value="d"),
+    discord.app_commands.Choice(name="Yellow", value="e"),
+    discord.app_commands.Choice(name="White", value="f"),
+]
+
+@bot.tree.command(name="color", description="Set a custom color for your username in stats displays")
+@discord.app_commands.describe(
+    ign="Minecraft IGN",
+    color="Color for your username"
+)
+@discord.app_commands.choices(color=COLOR_CHOICES)
+async def color(interaction: discord.Interaction, ign: str, color: discord.app_commands.Choice[str]):
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.defer()
+        except (discord.errors.NotFound, discord.errors.HTTPException):
+            return
+    
+    # Check if user is authorized to change color for this username
+    if not is_user_authorized(interaction.user.id, ign):
+        await interaction.followup.send(f"[ERROR] You are not authorized to change the color for {ign}. Only the user who claimed this username can change its color.")
+        return
+    
+    try:
+        # Load or create color preferences
+        color_data = {}
+        if os.path.exists(USER_COLORS_FILE):
+            with open(USER_COLORS_FILE, 'r') as f:
+                color_data = json.load(f)
+        
+        # Get hex color from code
+        color_code = color.value
+        hex_color = MINECRAFT_CODE_TO_HEX.get(color_code, '#FFFFFF')
+        
+        # Store the color preference (case-insensitive)
+        color_data[ign.lower()] = hex_color
+        
+        # Save to file
+        with open(USER_COLORS_FILE, 'w') as f:
+            json.dump(color_data, f, indent=2)
+        
+        await interaction.followup.send(f"Successfully set {ign}'s username color to {color.name}!")
+        
+    except Exception as e:
+        await interaction.followup.send(f"[ERROR] Failed to set color: {str(e)}")
+
 @bot.tree.command(name="reset", description="Reset session snapshot for a player")
 @discord.app_commands.describe(ign="Minecraft IGN")
 async def reset(interaction: discord.Interaction, ign: str):
@@ -1852,9 +2010,11 @@ async def sheepwars(interaction: discord.Interaction, ign: str):
         # Find sheet case-insensitively
         key = ign.casefold()
         found_sheet = None
+        actual_ign = ign  # Store the actual sheet name (proper case)
         for sheet_name in wb.sheetnames:
             if sheet_name.casefold() == key:
                 found_sheet = wb[sheet_name]
+                actual_ign = sheet_name  # Get the properly cased username
                 break
         
         if found_sheet is None:
@@ -1885,13 +2045,12 @@ async def sheepwars(interaction: discord.Interaction, ign: str):
             level_value = 0
         prestige_icon = get_prestige_icon(level_value)
 
-        # Create view with tabs
-        view = StatsTabView(found_sheet, ign, level_value, prestige_icon)
-        embed = view.get_stats_embed("all-time")
-        title_file = view.add_title_to_embed(embed)
+        # Create view with tabs using actual_ign (properly cased)
+        view = StatsTabView(found_sheet, actual_ign, level_value, prestige_icon)
+        embed, file = view.generate_composite_image("all-time")
         
-        if title_file:
-            await interaction.followup.send(embed=embed, view=view, file=title_file)
+        if file:
+            await interaction.followup.send(view=view, file=file)
         else:
             await interaction.followup.send(embed=embed, view=view)
         wb.close()
