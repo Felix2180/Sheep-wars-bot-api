@@ -1,3 +1,54 @@
 {
-  "chuckegg": "#FF55FF"
+  "dontana": {
+    "color": "#FFFFFF",
+    "rank": "SUPERSTAR"
+  },
+  "one4kat": {
+    "color": "#FFD3F5",
+    "rank": "SUPERSTAR",
+    "guild_tag": "PUN",
+    "guild_color": "YELLOW"
+  },
+  "chuckegg": {
+    "color": "#FF55FF",
+    "rank": "MVP_PLUS",
+    "guild_tag": "QUEBEC",
+    "guild_color": "DARK_GREEN"
+  },
+  "imeowinvc": {
+    "color": "#FF5555",
+    "rank": "VIP"
+  },
+  "pogdude69": {
+    "color": "#00AA00",
+    "rank": "VIP_PLUS"
+  },
+  "dejectin": {
+    "color": "#55FFFF",
+    "rank": "MVP_PLUS"
+  },
+  "tntcoins": {
+    "color": "#55FFFF",
+    "rank": "MVP_PLUS",
+    "guild_tag": "MERRY",
+    "guild_color": "GOLD"
+  },
+  "lxna_": {
+    "color": "#55FFFF",
+    "rank": "MVP_PLUS"
+  },
+  "hiiiii": {
+    "color": "#FFAA00",
+    "rank": "SUPERSTAR"
+  },
+  "leoneyl": {
+    "color": "#55FFFF",
+    "rank": "MVP_PLUS"
+  },
+  "qrsn": {
+    "color": "#00AAAA",
+    "rank": "MVP_PLUS",
+    "guild_tag": "\u273fFISHE\u2764",
+    "guild_color": "DARK_AQUA"
+  }
 }

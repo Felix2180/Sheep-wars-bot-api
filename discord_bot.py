@@ -321,6 +321,26 @@ MINECRAFT_CODE_TO_HEX = {
     'f': '#FFFFFF',
 }
 
+# Minecraft color name to hex (from Hypixel API)
+MINECRAFT_NAME_TO_HEX = {
+    'BLACK': '#000000',
+    'DARK_BLUE': '#0000AA',
+    'DARK_GREEN': '#00AA00',
+    'DARK_AQUA': '#00AAAA',
+    'DARK_RED': '#AA0000',
+    'DARK_PURPLE': '#AA00AA',
+    'GOLD': '#FFAA00',
+    'GRAY': '#AAAAAA',
+    'DARK_GRAY': '#555555',
+    'BLUE': '#5555FF',
+    'GREEN': '#55FF55',
+    'AQUA': '#55FFFF',
+    'RED': '#FF5555',
+    'LIGHT_PURPLE': '#FF55FF',
+    'YELLOW': '#FFFF55',
+    'WHITE': '#FFFFFF',
+}
+
 def hex_to_rgb(h: str) -> tuple:
     h = h.lstrip('#')
     return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
@@ -455,12 +475,16 @@ def _parse_raw_pattern(raw: str) -> list:
     return parts
 
 
-def render_prestige_with_text(level: int, icon: str, ign: str, suffix: str = "", ign_color: str = None) -> io.BytesIO:
-    """Render a prestige prefix with IGN and optional suffix text (e.g., ' - All-time Stats').
+def render_prestige_with_text(level: int, icon: str, ign: str, suffix: str = "", ign_color: str = None, 
+                              guild_tag: str = None, guild_color: str = None, two_line: bool = False) -> io.BytesIO:
+    """Render a prestige prefix with IGN, optional guild tag, and optional suffix text.
     
     Returns a BytesIO containing the rendered PNG image.
     If Pillow is not available, raises RuntimeError.
     ign_color: Hex color code for the IGN (e.g., '#FF5555')
+    guild_tag: Guild tag to display after username (e.g., 'QUEBEC')
+    guild_color: Color name from Hypixel API (e.g., 'DARK_AQUA')
+    two_line: If True, formats as [level icon] username [guild] on first line, suffix on second line
     """
     if Image is None:
         raise RuntimeError("Pillow not available")
@@ -545,7 +569,19 @@ def render_prestige_with_text(level: int, icon: str, ign: str, suffix: str = "",
     # Add IGN with custom color if specified
     ign_hex = ign_color if ign_color else MINECRAFT_CODE_TO_HEX.get('f', '#FFFFFF')
     segments.append((ign_hex, f" {ign}"))
-    if suffix:
+    
+    # Add guild tag if provided
+    if guild_tag and guild_color:
+        guild_hex = MINECRAFT_NAME_TO_HEX.get(guild_color.upper(), '#FFFFFF')
+        segments.append((guild_hex, f" [{guild_tag}]"))
+    elif guild_tag:
+        segments.append((MINECRAFT_CODE_TO_HEX.get('f', '#FFFFFF'), f" [{guild_tag}]"))
+    
+    if two_line and suffix:
+        # Two-line format: first line ends after guild tag, second line is the suffix
+        return _render_text_segments_to_image_multiline([segments, [(MINECRAFT_CODE_TO_HEX.get('f', '#FFFFFF'), suffix)]])
+    elif suffix:
+        # Single line format: append suffix with " - " prefix
         segments.append((MINECRAFT_CODE_TO_HEX.get('f', '#FFFFFF'), suffix))
     
     return _render_text_segments_to_image(segments)
@@ -595,6 +631,73 @@ def _render_text_segments_to_image(segments: list, font=None, padding=(8,6)) -> 
     return out
 
 
+def _render_text_segments_to_image_multiline(lines: list, font=None, padding=(8,6), line_spacing=2) -> io.BytesIO:
+    """Render multiple lines of colored text segments to a PNG.
+    
+    Args:
+        lines: List of segment lists, where each segment list is [(color_hex, text), ...]
+        font: Font to use
+        padding: Horizontal and vertical padding
+        line_spacing: Additional vertical space between lines
+    """
+    if Image is None:
+        raise RuntimeError("Pillow not available")
+    if font is None:
+        try:
+            font = ImageFont.truetype("DejaVuSans.ttf", 26)
+        except Exception:
+            font = ImageFont.load_default()
+
+    draw_dummy = ImageDraw.Draw(Image.new('RGBA', (1,1)))
+    
+    # Measure each line
+    line_widths = []
+    line_heights = []
+    for segments in lines:
+        line_w = 0
+        line_h = 0
+        for color_hex, text in segments:
+            bbox = draw_dummy.textbbox((0, 0), text, font=font)
+            w = bbox[2] - bbox[0]
+            h = bbox[3] - bbox[1]
+            line_w += w
+            line_h = max(line_h, h)
+        line_widths.append(line_w)
+        line_heights.append(line_h)
+    
+    # Calculate total image size
+    max_w = max(line_widths) if line_widths else 0
+    total_h = sum(line_heights) + (len(lines) - 1) * line_spacing if lines else 0
+    
+    img_w = max_w + padding[0] * 2
+    img_h = total_h + padding[1] * 2
+    img = Image.new('RGBA', (img_w, img_h), (0,0,0,0))
+    draw = ImageDraw.Draw(img)
+    
+    # Draw each line (center each line horizontally)
+    y = padding[1]
+    for line_idx, segments in enumerate(lines):
+        # Calculate starting x position to center this line
+        line_width = line_widths[line_idx]
+        x = (img_w - line_width) // 2
+        
+        for color_hex, text in segments:
+            try:
+                color = tuple(int(color_hex.lstrip('#')[i:i+2], 16) for i in (0,2,4))
+            except Exception:
+                color = (255,255,255)
+            draw.text((x, y), text, font=font, fill=color)
+            bbox = draw.textbbox((x, y), text, font=font)
+            w = bbox[2] - bbox[0]
+            x += w
+        y += line_heights[line_idx] + line_spacing
+    
+    out = io.BytesIO()
+    img.save(out, format='PNG')
+    out.seek(0)
+    return out
+
+
 def render_stat_box(label: str, value: str, width: int = 200, height: int = 80):
     """Render a single stat box with label and value on black background."""
     if Image is None:
@@ -631,14 +734,15 @@ def render_stat_box(label: str, value: str, width: int = 200, height: int = 80):
 
 def create_stats_composite_image(level: int, icon: str, ign: str, tab_name: str, 
                                   wins: int, losses: int, wl_ratio: float,
-                                  kills: int, deaths: int, kd_ratio: float, ign_color: str = None) -> io.BytesIO:
+                                  kills: int, deaths: int, kd_ratio: float, 
+                                  ign_color: str = None, guild_tag: str = None, guild_color: str = None) -> io.BytesIO:
     """Create a composite image with title and 2x3 grid of stats."""
     if Image is None:
         raise RuntimeError("Pillow not available")
     
-    # Generate title image with custom username color
-    suffix = f" - {tab_name.title()} Stats"
-    title_io = render_prestige_with_text(level, icon, ign, suffix, ign_color)
+    # Generate title image with custom username color and guild tag (two-line format)
+    second_line = f"{tab_name.title()} Stats"
+    title_io = render_prestige_with_text(level, icon, ign, second_line, ign_color, guild_tag, guild_color, two_line=True)
     title_img = Image.open(title_io)
     
     # Generate stat boxes
@@ -659,24 +763,30 @@ def create_stats_composite_image(level: int, icon: str, ign: str, tab_name: str,
     grid_width = stat_width * 3 + spacing * 2
     grid_height = stat_height * 2 + spacing
     
-    # Scale title to match grid width
-    scale_factor = grid_width / title_img.width
-    new_title_width = grid_width
-    new_title_height = int(title_img.height * scale_factor)
-    title_img = title_img.resize((new_title_width, new_title_height), Image.LANCZOS)
+    # Don't scale up the title, only scale down if it's too wide
+    title_width = title_img.width
+    title_height = title_img.height
+    if title_width > grid_width:
+        scale_factor = grid_width / title_width
+        title_width = grid_width
+        title_height = int(title_img.height * scale_factor)
+        title_img = title_img.resize((title_width, title_height), Image.LANCZOS)
+    
+    # Calculate horizontal centering offset for title
+    title_x_offset = (grid_width - title_width) // 2
     
     composite_width = grid_width
     bottom_padding = 20  # Extra space at bottom
-    composite_height = new_title_height + spacing + grid_height + bottom_padding
+    composite_height = title_height + spacing + grid_height + bottom_padding
     
     # Create composite image with black background
     composite = Image.new('RGB', (composite_width, composite_height), (0, 0, 0))
     
-    # Paste title (now full width)
-    composite.paste(title_img, (0, 0), title_img if title_img.mode == 'RGBA' else None)
+    # Paste title centered horizontally
+    composite.paste(title_img, (title_x_offset, 0), title_img if title_img.mode == 'RGBA' else None)
     
     # Paste stat boxes in 2x3 grid (no offset needed since grid matches width)
-    y_offset = new_title_height + spacing
+    y_offset = title_height + spacing
     
     for i, stat_box in enumerate(stat_boxes):
         row = i // 3
@@ -1148,14 +1258,28 @@ class StatsTabView(discord.ui.View):
         self.current_tab = "all-time"
         
         # Load custom color for this username
+        self._load_color()
+    
+    def _load_color(self):
+        """Load or reload the color and guild info for this username from user_colors.json"""
         self.ign_color = None
+        self.guild_tag = None
+        self.guild_color = None
         try:
             if os.path.exists(USER_COLORS_FILE):
                 with open(USER_COLORS_FILE, 'r') as f:
                     color_data = json.load(f)
-                    self.ign_color = color_data.get(ign.lower())
+                    user_entry = color_data.get(self.ign.lower())
+                    # Handle both old format (string) and new format (dict with color and rank)
+                    if isinstance(user_entry, str):
+                        self.ign_color = user_entry
+                    elif isinstance(user_entry, dict):
+                        self.ign_color = user_entry.get('color')
+                        self.guild_tag = user_entry.get('guild_tag')
+                        self.guild_color = user_entry.get('guild_color')
+                    print(f"[DEBUG] Loaded color for {self.ign}: {self.ign_color}, guild: [{self.guild_tag}] ({self.guild_color})")
         except Exception as e:
-            print(f"[WARNING] Failed to load color for {ign}: {e}")
+            print(f"[WARNING] Failed to load color for {self.ign}: {e}")
         
         # Find rows dynamically by searching column A for stat names
         self.stat_rows = self._find_stat_rows()
@@ -1222,7 +1346,8 @@ class StatsTabView(discord.ui.View):
             try:
                 img_io = create_stats_composite_image(
                     self.level_value, self.prestige_icon, self.ign, tab_name,
-                    wins, losses, wl_ratio, kills, deaths, kd_ratio, self.ign_color
+                    wins, losses, wl_ratio, kills, deaths, kd_ratio, 
+                    self.ign_color, self.guild_tag, self.guild_color
                 )
                 filename = f"{self.ign}_{tab_name}_stats.png"
                 # Return None for embed to avoid border
@@ -1536,10 +1661,12 @@ if not DISCORD_TOKEN:
 
 @bot.event
 async def on_ready():
-    print(f"[OK] Bot logged in as {bot.user}")
+    import time
+    bot_instance_id = int(time.time() * 1000) % 100000
+    print(f"[OK] Bot logged in as {bot.user} - Instance ID: {bot_instance_id}")
     try:
         synced = await bot.tree.sync()
-        print(f"[OK] Synced {len(synced)} command(s)")
+        print(f"[OK] Synced {len(synced)} command(s) - Instance ID: {bot_instance_id}")
     except Exception as e:
         print(f"[ERROR] Failed to sync commands: {e}")
     # start background scheduler once
@@ -1764,8 +1891,18 @@ async def color(interaction: discord.Interaction, ign: str, color: discord.app_c
         color_code = color.value
         hex_color = MINECRAFT_CODE_TO_HEX.get(color_code, '#FFFFFF')
         
-        # Store the color preference (case-insensitive)
-        color_data[ign.lower()] = hex_color
+        # Store the color preference with new structure
+        username_key = ign.lower()
+        if username_key in color_data:
+            # Update existing entry, preserve rank if it exists
+            if isinstance(color_data[username_key], dict):
+                color_data[username_key]['color'] = hex_color
+            else:
+                # Old format, convert to new format
+                color_data[username_key] = {'color': hex_color, 'rank': None}
+        else:
+            # New entry
+            color_data[username_key] = {'color': hex_color, 'rank': None}
         
         # Save to file
         with open(USER_COLORS_FILE, 'w') as f:
@@ -1982,17 +2119,26 @@ async def refresh(interaction: discord.Interaction, mode: discord.app_commands.C
 @bot.tree.command(name="sheepwars", description="Get player stats with deltas")
 @discord.app_commands.describe(ign="Minecraft IGN")
 async def sheepwars(interaction: discord.Interaction, ign: str):
+    print(f"[DEBUG] /sheepwars triggered for IGN: {ign} by user: {interaction.user.name} in guild: {interaction.guild.name if interaction.guild else 'DM'}")
+    
     # Defer FIRST, before any long operations
     if not interaction.response.is_done():
         try:
+            print(f"[DEBUG] Deferring interaction for {ign}")
             await interaction.response.defer()
-        except (discord.errors.NotFound, discord.errors.HTTPException):
+            print(f"[DEBUG] Defer successful for {ign}")
+        except (discord.errors.NotFound, discord.errors.HTTPException) as e:
             # Interaction expired or already acknowledged - nothing we can do
+            print(f"[DEBUG] Defer failed for {ign}: {e}")
             return
     
     try:
         # Fetch fresh stats using api_get.py (updates all-time only, no snapshots)
+        print(f"[DEBUG] Running api_get.py for IGN: {ign}")
         result = run_script("api_get.py", ["-ign", ign])
+        print(f"[DEBUG] api_get.py returncode: {result.returncode}")
+        print(f"[DEBUG] api_get.py stdout: {result.stdout if result.stdout else 'None'}")
+        print(f"[DEBUG] api_get.py stderr: {result.stderr if result.stderr else 'None'}")
         
         if result.returncode != 0:
             error_msg = result.stderr or result.stdout or "Unknown error"
@@ -2047,6 +2193,10 @@ async def sheepwars(interaction: discord.Interaction, ign: str):
 
         # Create view with tabs using actual_ign (properly cased)
         view = StatsTabView(found_sheet, actual_ign, level_value, prestige_icon)
+        
+        # Reload color after API fetch (api_get.py may have just saved rank/color)
+        view._load_color()
+        
         embed, file = view.generate_composite_image("all-time")
         
         if file:
