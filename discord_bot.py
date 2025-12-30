@@ -93,23 +93,10 @@ def _get_font_path(font_name: str) -> str:
     return font_name
 
 def _load_font(font_name: str, font_size: int):
-    """Load a TrueType font with fallback to default font.
-    
-    Args:
-        font_name: Name of the font file (e.g., 'DejaVuSans.ttf')
-        font_size: Size of the font in points
-    
-    Returns:
-        A Pillow ImageFont object
-    """
-    if Image is None:
-        raise RuntimeError("Pillow not available")
-    
+    path = os.path.join(BOT_DIR, 'fonts', font_name)
     try:
-        font_path = _get_font_path(font_name)
-        return ImageFont.truetype(font_path, font_size)
-    except Exception:
-        # Fall back to default font if TrueType loading fails
+        return ImageFont.truetype(path, font_size)
+    except:
         return ImageFont.load_default()
 
 def safe_save_workbook(wb, filepath: str) -> bool:
@@ -216,23 +203,11 @@ def validate_and_normalize_ign(ign: str):
 
 
 def _to_number(val):
-    """Coerce worksheet cell values to a numeric type (float).
-
-    Returns 0 for None/empty/unparseable values. Strips commas before parsing.
-    """
-    if val is None:
-        return 0
-    if isinstance(val, (int, float)):
-        return val
-    s = str(val).strip()
-    if s == "":
-        return 0
-    # Remove thousands separators
-    s = s.replace(",", "")
-    try:
-        return float(s)
-    except Exception:
-        return 0
+    if val is None: return 0
+    if isinstance(val, (int, float)): return val
+    s = str(val).replace(".", "").replace(",", "").strip()
+    try: return float(s)
+    except: return 0
 
 # Helper function to run scripts with proper working directory
 def run_script(script_name, args, timeout=30):
@@ -261,59 +236,16 @@ import datetime
 import random
 
 def format_playtime(seconds: int) -> str:
-    """Convert playtime from seconds to human-readable format.
-    
-    - >= 30 days: 'x months, x days' (if days > 1) or 'x months'
-    - >= 24 hours: 'x days, x hours' (if hours > 0) or 'x days'
-    - >= 60 minutes: 'x hours x minutes' (if minutes > 0) or 'x hours'
-    - >= 60 seconds: 'x minutes x seconds' (if seconds > 0) or 'x minutes'
-    - else: 'x seconds'
-    """
-    if not isinstance(seconds, (int, float)):
-        return "0 seconds"
-    
+    if not isinstance(seconds, (int, float)) or seconds <= 0:
+        return "0s"
     seconds = int(seconds)
-    if seconds < 0:
-        return "0 seconds"
-    
-    # Define time units (in ascending order)
     days = seconds // 86400
-    remaining_seconds = seconds % 86400
-    
-    hours = remaining_seconds // 3600
-    remaining_seconds %= 3600
-    
-    minutes = remaining_seconds // 60
-    secs = remaining_seconds % 60
-    
-    months = days // 30
-    days_in_month = days % 30
-    
-    # Build the string based on which units are significant
-    if seconds < 60:
-        return f"{seconds} second{'s' if seconds != 1 else ''}"
-    elif seconds < 3600:  # Less than 1 hour
-        if secs > 0:
-            return f"{minutes} minute{'s' if minutes != 1 else ''} {secs} second{'s' if secs != 1 else ''}"
-        else:
-            return f"{minutes} minute{'s' if minutes != 1 else ''}"
-    elif seconds < 86400:  # Less than 1 day
-        if minutes > 0:
-            return f"{hours} hour{'s' if hours != 1 else ''} {minutes} minute{'s' if minutes != 1 else ''}"
-        else:
-            return f"{hours} hour{'s' if hours != 1 else ''}"
-    elif seconds < 2592000:  # Less than 30 days
-        if hours > 0:
-            return f"{days} day{'s' if days != 1 else ''} {hours} hour{'s' if hours != 1 else ''}"
-        else:
-            return f"{days} day{'s' if days != 1 else ''}"
-    else:  # 30+ days
-        if days_in_month > 1:
-            return f"{months} month{'s' if months != 1 else ''} {days_in_month} day{'s' if days_in_month != 1 else ''}"
-        elif days_in_month == 1:
-            return f"{months} month{'s' if months != 1 else ''} 1 day"
-        else:
-            return f"{months} month{'s' if months != 1 else ''}"
+    rem = seconds % 86400
+    hours = rem // 3600
+    minutes = (rem % 3600) // 60
+    if days > 0: return f"{days}d {hours}h"
+    if hours > 0: return f"{hours}h {minutes}m"
+    return f"{minutes}m"
 
 
 # Prestige icons per 100 levels (index 0 = levels 0-99)
@@ -894,72 +826,59 @@ def render_stat_box(label: str, value: str, width: int = 200, height: int = 80):
     return img
 
 
-def create_stats_composite_image(level: int, icon: str, ign: str, tab_name: str, 
-                                  wins: int, losses: int, wl_ratio: float,
-                                  kills: int, deaths: int, kd_ratio: float, 
-                                  ign_color: str = None, guild_tag: str = None, guild_color: str = None) -> io.BytesIO:
-    """Create a composite image with title and 2x3 grid of stats."""
-    if Image is None:
-        raise RuntimeError("Pillow not available")
+def create_stats_composite_image(level, icon, ign, tab_name, wins, losses, wl_ratio, kills, deaths, kd_ratio, 
+                                  ign_color=None, guild_tag=None, playtime_seconds=0):
+    canvas_w, canvas_h = 1200, 720
+    margin, spacing = 40, 15
+    composite = Image.new('RGBA', (canvas_w, canvas_h), (18, 18, 20, 255))
     
-    # Generate title image with custom username color and guild tag (two-line format)
-    second_line = f"{tab_name.title()} Stats"
-    title_io = render_prestige_with_text(level, icon, ign, second_line, ign_color, guild_tag, guild_color, two_line=True)
-    title_img = Image.open(title_io)
+    formatted_playtime = format_playtime(playtime_seconds)
+    skin_w, skin_h = 240, 285
+    header_card_w = (canvas_w - (margin * 2) - skin_w - (spacing * 2)) // 2
     
-    # Generate stat boxes
-    stat_width = 200
-    stat_height = 80
-    spacing = 10
+    skin_card = Image.new('RGBA', (skin_w, skin_h), (0, 0, 0, 0))
+    ImageDraw.Draw(skin_card).rounded_rectangle([0, 0, skin_w, skin_h], radius=15, fill=(35, 30, 45, 240))
+    skin = get_player_body(ign)
+    if skin:
+        skin.thumbnail((220, 260), Image.Resampling.LANCZOS)
+        skin_card.paste(skin, ((skin_w - skin.width)//2, (skin_h - skin.height)//2), skin)
+    composite.paste(skin_card, (margin, margin), skin_card)
+
+    col1_x = margin + skin_w + spacing
+    col2_x = col1_x + header_card_w + spacing
     
-    stat_boxes = [
-        render_stat_box("Wins", str(wins), stat_width, stat_height),
-        render_stat_box("Losses", str(losses), stat_width, stat_height),
-        render_stat_box("W/L Ratio", str(wl_ratio), stat_width, stat_height),
-        render_stat_box("Kills", str(kills), stat_width, stat_height),
-        render_stat_box("Deaths", str(deaths), stat_width, stat_height),
-        render_stat_box("K/D Ratio", str(kd_ratio), stat_width, stat_height),
+    c1 = render_modern_card("IGN", ign, header_card_w, 85, is_header=True, color=(85, 255, 255))
+    c2 = render_modern_card("Level", f"[{int(level)}{icon}]", header_card_w, 85, color=(85, 255, 85))
+    c3 = render_modern_card("Mode", tab_name.upper(), header_card_w, 85)
+    c4 = render_modern_card("Playtime", formatted_playtime, header_card_w, 85, is_header=True, color=(255, 85, 255))
+    c5 = render_modern_card("Guild", f"{guild_tag if guild_tag else 'None'}", header_card_w, 85)
+    c6 = render_modern_card("Status", "Online", header_card_w, 85, color=(85, 255, 85))
+
+    for i, card in enumerate([c1, c2, c3]):
+        composite.paste(card, (col1_x, margin + i*(85+spacing)), card)
+    for i, card in enumerate([c4, c5, c6]):
+        composite.paste(card, (col2_x, margin + i*(85+spacing)), card)
+
+    line_y = margin + skin_h + 25
+    ImageDraw.Draw(composite).line([margin, line_y, canvas_w - margin, line_y], fill=(60, 60, 80), width=2)
+    
+    grid_y = line_y + 25
+    cols = 3
+    grid_card_w = (canvas_w - (margin * 2) - (spacing * (cols - 1))) // cols
+    grid_card_h = 110
+    
+    stats_data = [
+        ("Wins", f"{int(wins):,}", (85, 255, 85)), ("Losses", f"{int(losses):,}", (255, 85, 85)), ("WLR", f"{wl_ratio:.2f}", (85, 255, 85)),
+        ("Kills", f"{int(kills):,}", (255, 255, 255)), ("Deaths", f"{int(deaths):,}", (255, 255, 255)), ("KDR", f"{kd_ratio:.2f}", (85, 255, 85))
     ]
-    
-    # Calculate composite dimensions
-    grid_width = stat_width * 3 + spacing * 2
-    grid_height = stat_height * 2 + spacing
-    
-    # Don't scale up the title, only scale down if it's too wide
-    title_width = title_img.width
-    title_height = title_img.height
-    if title_width > grid_width:
-        scale_factor = grid_width / title_width
-        title_width = grid_width
-        title_height = int(title_img.height * scale_factor)
-        title_img = title_img.resize((title_width, title_height), Image.LANCZOS)
-    
-    # Calculate horizontal centering offset for title
-    title_x_offset = (grid_width - title_width) // 2
-    
-    composite_width = grid_width
-    bottom_padding = 20  # Extra space at bottom
-    composite_height = title_height + spacing + grid_height + bottom_padding
-    
-    # Create composite image with black background
-    composite = Image.new('RGB', (composite_width, composite_height), (0, 0, 0))
-    
-    # Paste title centered horizontally
-    composite.paste(title_img, (title_x_offset, 0), title_img if title_img.mode == 'RGBA' else None)
-    
-    # Paste stat boxes in 2x3 grid (no offset needed since grid matches width)
-    y_offset = title_height + spacing
-    
-    for i, stat_box in enumerate(stat_boxes):
-        row = i // 3
-        col = i % 3
-        x = col * (stat_width + spacing)
-        y = y_offset + row * (stat_height + spacing)
-        composite.paste(stat_box, (x, y))
-    
-    # Save to BytesIO
+
+    for i, (label, val, color) in enumerate(stats_data):
+        row, col = divmod(i, cols)
+        card = render_modern_card(label, val, grid_card_w, grid_card_h, color=color)
+        composite.paste(card, (int(margin + col * (grid_card_w + spacing)), int(grid_y + row * (grid_card_h + spacing))), card)
+
     out = io.BytesIO()
-    composite.save(out, format='PNG')
+    composite.convert("RGB").save(out, format='PNG')
     out.seek(0)
     return out
 
@@ -1104,187 +1023,67 @@ def create_full_stats_image(ign: str, tab_name: str, level: int, icon: str, stat
 
 
 def create_leaderboard_image(tab_name: str, metric_label: str, leaderboard_data: list, page: int = 0, total_pages: int = 1) -> io.BytesIO:
-    """Create a leaderboard image similar to the SheepWars format.
-
-    Args:
-        tab_name: The period/tab name (e.g., "Lifetime", "Session")
-        metric_label: The stat being displayed (e.g., "Magic Wool", "Kills")
-        leaderboard_data: List of tuples (rank, player_name, level, icon, ign_color, value, is_playtime)
-        page: Zero-based page index for display context
-        total_pages: Total available pages for display context
-
-    Returns:
-        BytesIO containing the rendered PNG image
-    """
-    if Image is None:
-        raise RuntimeError("Pillow not available")
+    row_height, header_height, padding = 55, 70, 20
+    total_width = 950 # Angepasst für Symmetrie
+    total_height = header_height + (row_height * len(leaderboard_data)) + padding * 2
     
-    # Dimensions and styling
-    row_height = 50
-    header_height = 60  # Reduced from 80 since we only have one title line now
-    padding = 15
-    
-    # Column widths
-    pos_width = 80
-    player_width = 380
-    stat_width = 180
-    
-    total_width = pos_width + player_width + stat_width + (padding * 4)
-    num_rows = len(leaderboard_data)
-    # Add extra padding at the bottom to ensure last row isn't cut off
-    total_height = header_height + (row_height * (num_rows + 1)) + (padding * 2)
-    
-    # Create image with dark background
-    img = Image.new('RGB', (total_width, total_height), (30, 30, 35))
+    img = Image.new('RGBA', (total_width, total_height), (18, 18, 20, 255))
     draw = ImageDraw.Draw(img)
     
-    # Fonts
-    try:
-        title_font = _load_font("DejaVuSans-Bold.ttf", 28)
-        header_font = _load_font("DejaVuSans-Bold.ttf", 20)
-        data_font = _load_font("DejaVuSans.ttf", 18)
-        prestige_font = _load_font("DejaVuSans.ttf", 16)
-    except Exception:
-        title_font = ImageFont.load_default()
-        header_font = ImageFont.load_default()
-        data_font = ImageFont.load_default()
-        prestige_font = ImageFont.load_default()
+    data_font = _load_font("DejaVuSans.ttf", 18)
+    guild_font = _load_font("DejaVuSans-Bold.ttf", 16)
     
-    # Draw title without page suffix to avoid overly wide text
-    title_text = f"{tab_name} {metric_label} Leaderboard"
-    
-    # Calculate title position
-    bbox = draw.textbbox((0, 0), title_text, font=title_font)
-    title_width = bbox[2] - bbox[0]
-    title_x = (total_width - title_width) // 2
-    
-    draw.text((title_x, 20), title_text, font=title_font, fill=(220, 220, 220))
-    
-    # Draw header row background (darker shade)
-    header_y = header_height
-    draw.rectangle([(0, header_y), (total_width, header_y + row_height)], fill=(45, 45, 50))
-    
-    # Draw header text
-    header_texts = ["Pos", "Player", metric_label]
-    header_x_positions = [
-        padding + pos_width // 2,
-        padding + pos_width + padding + player_width // 2,
-        padding + pos_width + padding + player_width + padding + stat_width // 2
-    ]
-    
-    for text, x_pos in zip(header_texts, header_x_positions):
-        bbox = draw.textbbox((0, 0), text, font=header_font)
-        text_width = bbox[2] - bbox[0]
-        draw.text((x_pos - text_width // 2, header_y + 15), text, font=header_font, fill=(200, 200, 200))
-    
-    # Draw data rows
-    y_offset = header_y + row_height
-    
-    for rank, player_name, level, icon, ign_color, value, is_playtime in leaderboard_data:
-        # Alternate row colors for better readability
-        if rank % 2 == 0:
-            draw.rectangle([(0, y_offset), (total_width, y_offset + row_height)], fill=(38, 38, 43))
-        else:
-            draw.rectangle([(0, y_offset), (total_width, y_offset + row_height)], fill=(30, 30, 35))
+    # Header-Hintergrund
+    draw.rounded_rectangle([padding, padding, total_width-padding, header_height+padding], radius=12, fill=(35, 30, 45, 255))
+
+    y_offset = header_height + padding + 10
+    for i, entry in enumerate(leaderboard_data):
+        player, _, value, is_playtime, level, icon, p_hex, g_tag, g_hex = entry
+        rank = (page * 10) + i + 1
+
+        # Zeilen-Hintergrund
+        row_bg = (30, 30, 38, 255) if i % 2 == 0 else (24, 24, 30, 255)
+        draw.rounded_rectangle([padding, y_offset, total_width-padding, y_offset+row_height-5], radius=8, fill=row_bg)
         
-        # Draw rank number
-        rank_text = f"#{rank}"
-        bbox = draw.textbbox((0, 0), rank_text, font=data_font)
-        rank_width = bbox[2] - bbox[0]
-        rank_x = padding + pos_width // 2 - rank_width // 2
-        draw.text((rank_x, y_offset + 15), rank_text, font=data_font, fill=(255, 255, 255))
+        # Rank & Prestige Icons
+        draw.text((padding*2, y_offset + 15), f"#{rank}", font=data_font, fill=(150, 150, 150))
+        draw.text((padding*5, y_offset + 15), f"[{level}{icon}]", font=data_font, fill=(180, 180, 180))
         
-        # Draw player name with prestige prefix
-        player_x = padding + pos_width + padding
+        # SPIELERNAME (Hex zu RGB umwandeln)
+        p_rgb = tuple(int(p_hex.lstrip('#')[j:j+2], 16) for j in (0, 2, 4))
+        draw.text((padding*10, y_offset + 15), player, font=data_font, fill=p_rgb)
         
-        # Get prestige colors - need to handle bracket color vs content color
-        base = (level // 100) * 100
-        raw = PRESTIGE_RAW_PATTERNS.get(base)
-        bracket_color = (170, 170, 170)  # Default gray for brackets
-        content_color = (170, 170, 170)  # Default gray for content
+        # GUILD TAG (Hex zu RGB umwandeln für farbige Anzeige)
+        if g_tag:
+            name_w = draw.textbbox((0, 0), player, font=data_font)[2]
+            guild_x = padding * 10 + name_w + 10
+            
+            # RGB-Umwandlung erzwingt die Farbe in Pillow
+            try:
+                g_rgb = tuple(int(g_hex.lstrip('#')[j:j+2], 16) for j in (0, 2, 4))
+            except:
+                g_rgb = (170, 170, 170)
+                
+            draw.text((guild_x, y_offset + 17), f"[{g_tag}]", font=guild_font, fill=g_rgb)
         
-        if raw:
-            # Extract color codes - first for bracket, second for content if different
-            color_codes = re.findall(r'&([0-9a-fA-F])', raw)
-            if len(color_codes) >= 2:
-                # If we have at least 2 color codes, use first for bracket, second for content
-                code1 = color_codes[0].lower()
-                code2 = color_codes[1].lower()
-                hexcol1 = MINECRAFT_CODE_TO_HEX.get(code1)
-                hexcol2 = MINECRAFT_CODE_TO_HEX.get(code2)
-                if hexcol1:
-                    bracket_color = tuple(int(hexcol1.lstrip('#')[i:i+2], 16) for i in (0,2,4))
-                if hexcol2:
-                    content_color = tuple(int(hexcol2.lstrip('#')[i:i+2], 16) for i in (0,2,4))
-            elif len(color_codes) == 1:
-                # If only one color code, use it for both
-                code = color_codes[0].lower()
-                hexcol = MINECRAFT_CODE_TO_HEX.get(code)
-                if hexcol:
-                    bracket_color = tuple(int(hexcol.lstrip('#')[i:i+2], 16) for i in (0,2,4))
-                    content_color = bracket_color
-        
-        # Draw prestige with proper colors: [<bracket>level icon<bracket>]
-        # Draw opening bracket
-        draw.text((player_x, y_offset + 15), "[", font=prestige_font, fill=bracket_color)
-        bbox = draw.textbbox((player_x, y_offset + 15), "[", font=prestige_font)
-        current_x = bbox[2] - bbox[0]
-        
-        # Draw level and icon in content color
-        level_icon_text = f"{level}{icon}"
-        draw.text((player_x + current_x, y_offset + 15), level_icon_text, font=prestige_font, fill=content_color)
-        bbox = draw.textbbox((player_x + current_x, y_offset + 15), level_icon_text, font=prestige_font)
-        current_x += bbox[2] - bbox[0]
-        
-        # Draw closing bracket
-        draw.text((player_x + current_x, y_offset + 15), "]", font=prestige_font, fill=bracket_color)
-        bbox = draw.textbbox((player_x + current_x, y_offset + 15), "]", font=prestige_font)
-        current_x += bbox[2] - bbox[0]
-        
-        prestige_width = current_x
-        
-        # Draw player name with custom color
-        try:
-            if ign_color:
-                player_color = tuple(int(ign_color.lstrip('#')[i:i+2], 16) for i in (0,2,4))
-            else:
-                player_color = (255, 255, 255)
-        except Exception:
-            player_color = (255, 255, 255)
-        
-        name_x = player_x + prestige_width + 5
-        draw.text((name_x, y_offset + 15), player_name, font=data_font, fill=player_color)
-        
-        # Draw stat value
-        if is_playtime:
-            formatted_value = format_playtime(int(value))
-        else:
-            # Format large numbers with commas
-            if isinstance(value, float):
-                formatted_value = f"{value:,.2f}" if value % 1 else f"{int(value):,}"
-            else:
-                formatted_value = f"{int(value):,}"
-        
-        value_bbox = draw.textbbox((0, 0), formatted_value, font=data_font)
-        value_width = value_bbox[2] - value_bbox[0]
-        value_x = padding + pos_width + padding + player_width + padding + stat_width // 2 - value_width // 2
-        draw.text((value_x, y_offset + 15), formatted_value, font=data_font, fill=(255, 255, 255))
+        # Stat-Wert rechtsbündig
+        val_str = format_playtime(int(value)) if is_playtime else f"{value:,}"
+        v_w = draw.textbbox((0, 0), val_str, font=data_font)[2] - draw.textbbox((0, 0), val_str, font=data_font)[0]
+        draw.text((total_width - padding*2 - v_w, y_offset + 15), val_str, font=data_font, fill=(85, 255, 255))
         
         y_offset += row_height
-    
-    # Save to BytesIO
+
     out = io.BytesIO()
-    img.save(out, format='PNG')
+    img.convert("RGB").save(out, format='PNG')
     out.seek(0)
     return out
-
 
 def create_distribution_pie(title: str, slices: list) -> io.BytesIO:
     """Render a pie chart with a subtle 3D tilt and legend."""
     if Image is None:
         raise RuntimeError("Pillow not available")
 
-    total = sum(v for _, v, _ in slices)
+    total = sum(v for _, v, _ in slices) # Calculate total value for percentages
     if total <= 0:
         total = 1
 
@@ -1770,11 +1569,11 @@ def delete_user_sheet(ign: str) -> bool:
                 if not save_success:
                     print(f"[ERROR] Failed to save after deleting sheet for {ign}")
                     return False
+                return True
         finally:
             if wb is not None:
                 wb.close()
-            return True
-        
+
         # Sheet not found
         return False
         
@@ -1789,6 +1588,48 @@ def delete_user_sheet(ign: str) -> bool:
                 wb.close()
             except Exception as close_err:
                 print(f"[WARNING] Error closing workbook: {close_err}")
+
+def render_modern_card(label, value, width, height, color=(255, 255, 255), is_header=False):
+    img = Image.new('RGBA', (int(width), int(height)), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    card_bg = (35, 30, 45, 240) 
+    draw.rounded_rectangle([0, 0, width, height], radius=15, fill=card_bg)
+    font_label = _load_font("DejaVuSans-Bold.ttf", 14)
+    font_value = _load_font("DejaVuSans-Bold.ttf", 28 if is_header else 24)
+    l_text = f"{label.upper()}:"
+    l_bbox = draw.textbbox((0, 0), l_text, font=font_label)
+    draw.text(((width - (l_bbox[2]-l_bbox[0])) // 2, height * 0.2), l_text, font=font_label, fill=(180, 180, 200))
+    v_text = str(value)
+    v_bbox = draw.textbbox((0, 0), v_text, font=font_value)
+    draw.text(((width - (v_bbox[2]-v_bbox[0])) // 2, height * 0.5), v_text, font=font_value, fill=color)
+    return img
+
+def get_player_body(ign):
+    # Resolve UUID for better API support
+    identifier = ign
+    try:
+        r = requests.get(f"https://api.mojang.com/users/profiles/minecraft/{ign}", timeout=2)
+        if r.status_code == 200:
+            data = r.json()
+            if 'id' in data:
+                identifier = data['id']
+    except Exception:
+        pass
+
+    # Try multiple providers to find one that works/updates
+    # Using random param to bypass edge caching where possible
+    ts = random.randint(0, 10000)
+    providers = [
+        f"https://api.mineatar.io/body/full/{identifier}?scale=10&ts={ts}"
+    ]
+    for url in providers:
+        try:
+            r = requests.get(url, timeout=5)
+            if r.status_code == 200:
+                return Image.open(io.BytesIO(r.content)).convert("RGBA")
+        except Exception:
+            continue
+    return None
 
 # ---- Default IGN helpers ----
 def load_default_users() -> dict:
@@ -2226,178 +2067,76 @@ async def scheduler_loop():
 
 # Helper class for stats tab view
 class StatsTabView(discord.ui.View):
-    def __init__(self, sheet, ign, level_value: int, prestige_icon: str):
+    def __init__(self, data_dict, ign, level_value: int, prestige_icon: str):
         super().__init__()
-        self.sheet = sheet
+        self.data = data_dict 
         self.ign = ign
         self.level_value = level_value
         self.prestige_icon = prestige_icon
         self.current_tab = "all-time"
-        
-        # Load custom color for this username
-        self._load_color()
-    
-    def _load_color(self):
-        """Load or reload the color and guild info for this username from user_colors.json"""
         self.ign_color = None
         self.guild_tag = None
-        self.guild_color = None
-        try:
-            if os.path.exists(USER_COLORS_FILE):
-                with open(USER_COLORS_FILE, 'r') as f:
-                    color_data = json.load(f)
-                    user_entry = color_data.get(self.ign.lower())
-                    # Handle both old format (string) and new format (dict with color and rank)
-                    if isinstance(user_entry, str):
-                        self.ign_color = user_entry
-                    elif isinstance(user_entry, dict):
-                        self.ign_color = user_entry.get('color')
-                        self.guild_tag = user_entry.get('guild_tag')
-                        self.guild_color = user_entry.get('guild_color')
-                    print(f"[DEBUG] Loaded color for {self.ign}: {self.ign_color}, guild: [{self.guild_tag}] ({self.guild_color})")
-        except Exception as e:
-            print(f"[WARNING] Failed to load color for {self.ign}: {e}")
-        
-        # Find rows dynamically by searching column A for stat names
-        self.stat_rows = self._find_stat_rows()
-        
-        # Column mappings for each period
-        self.column_map = {
-            "all-time": "B",      # All-time values
-            # Use the DELTA columns so the bot shows session/daily/yesterday/monthly changes
-            "session": "C",       # Session Delta
-            "daily": "E",         # Daily Delta
-            "yesterday": "G",     # Yesterday Delta
-            "monthly": "I",       # Monthly Delta
-        }
-        self.update_buttons()
+        self._load_color()
+        self.update_button_styles()
 
-    def _find_stat_rows(self):
-        """Find row numbers for each stat by searching column A"""
-        rows = {}
-        for i in range(1, 100):  # Search first 100 rows
-            stat_name = self.sheet[f'A{i}'].value
-            if stat_name:
-                stat_key = str(stat_name).lower()
-                if stat_key == 'kills':
-                    rows['kills'] = i
-                elif stat_key == 'deaths':
-                    rows['deaths'] = i
-                elif stat_key == 'wins':
-                    rows['wins'] = i
-                elif stat_key == 'losses':
-                    rows['losses'] = i
-        return rows
-    
-    def update_buttons(self):
-        # Update button styles based on current tab
+    def _load_color(self):
+        if os.path.exists(USER_COLORS_FILE):
+            try:
+                with open(USER_COLORS_FILE, 'r') as f:
+                    data = json.load(f).get(self.ign.lower(), {})
+                    if isinstance(data, dict):
+                        self.ign_color = data.get('color')
+                        self.guild_tag = data.get('guild_tag')
+            except: pass
+
+    def update_button_styles(self):
+        """Setzt den aktiven Button auf Blau (Primary) und andere auf Grau (Secondary)."""
         for child in self.children:
             if isinstance(child, discord.ui.Button):
                 if child.custom_id == self.current_tab:
                     child.style = discord.ButtonStyle.primary
                 else:
                     child.style = discord.ButtonStyle.secondary
-    
-    def get_stats_embed(self, tab_name):
-        col = self.column_map[tab_name]
 
-        # Get values from the appropriate column and coerce to numbers
-        kills = _to_number(self.sheet[f"{col}{self.stat_rows['kills']}"].value)
-        deaths = _to_number(self.sheet[f"{col}{self.stat_rows['deaths']}"].value)
-        wins = _to_number(self.sheet[f"{col}{self.stat_rows['wins']}"].value)
-        losses = _to_number(self.sheet[f"{col}{self.stat_rows['losses']}"].value)
-        
-        # Calculate K/D and W/L ratios dynamically
-        kd_ratio = round(kills / deaths, 2) if deaths > 0 else kills
-        wl_ratio = round(wins / losses, 2) if losses > 0 else wins
-
-        embed = discord.Embed(title="")
-        
-        return embed, wins, losses, wl_ratio, kills, deaths, kd_ratio
-    
     def generate_composite_image(self, tab_name):
-        """Generate composite image with title and stats."""
-        embed, wins, losses, wl_ratio, kills, deaths, kd_ratio = self.get_stats_embed(tab_name)
+        tab_data = self.data[tab_name]
         
-        if Image is not None:
-            try:
-                img_io = create_stats_composite_image(
-                    self.level_value, self.prestige_icon, self.ign, tab_name,
-                    wins, losses, wl_ratio, kills, deaths, kd_ratio, 
-                    self.ign_color, self.guild_tag, self.guild_color
-                )
-                filename = f"{self.ign}_{tab_name}_stats.png"
-                # Return None for embed to avoid border
-                return None, discord.File(img_io, filename=filename)
-            except Exception as e:
-                print(f"[WARNING] Composite image generation failed: {e}")
-                # Fallback to text fields
-                embed.add_field(name="Wins", value=f"```{str(wins)}```", inline=True)
-                embed.add_field(name="Losses", value=f"```{str(losses)}```", inline=True)
-                embed.add_field(name="W/L Ratio", value=f"```{str(wl_ratio)}```", inline=True)
-                embed.add_field(name="Kills", value=f"```{str(kills)}```", inline=True)
-                embed.add_field(name="Deaths", value=f"```{str(deaths)}```", inline=True)
-                embed.add_field(name="K/D Ratio", value=f"```{str(kd_ratio)}```", inline=True)
-                return embed, None
-        else:
-            # Fallback to text fields if Pillow not available
-            embed.add_field(name="Wins", value=f"```{str(wins)}```", inline=True)
-            embed.add_field(name="Losses", value=f"```{str(losses)}```", inline=True)
-            embed.add_field(name="W/L Ratio", value=f"```{str(wl_ratio)}```", inline=True)
-            embed.add_field(name="Kills", value=f"```{str(kills)}```", inline=True)
-            embed.add_field(name="Deaths", value=f"```{str(deaths)}```", inline=True)
-            embed.add_field(name="K/D Ratio", value=f"```{str(kd_ratio)}```", inline=True)
-            return embed, None
-    
-    @discord.ui.button(label="All-time", custom_id="all-time", style=discord.ButtonStyle.primary)
-    async def all_time_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.current_tab = "all-time"
-        self.update_buttons()
-        embed, file = self.generate_composite_image(self.current_tab)
-        if file:
-            await interaction.response.edit_message(view=self, attachments=[file])
-        else:
-            await interaction.response.edit_message(embed=embed, view=self)
-    
-    @discord.ui.button(label="Session", custom_id="session", style=discord.ButtonStyle.secondary)
-    async def session_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.current_tab = "session"
-        self.update_buttons()
-        embed, file = self.generate_composite_image(self.current_tab)
-        if file:
-            await interaction.response.edit_message(view=self, attachments=[file])
-        else:
-            await interaction.response.edit_message(embed=embed, view=self)
-    
-    @discord.ui.button(label="Daily", custom_id="daily", style=discord.ButtonStyle.secondary)
-    async def daily_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.current_tab = "daily"
-        self.update_buttons()
-        embed, file = self.generate_composite_image(self.current_tab)
-        if file:
-            await interaction.response.edit_message(view=self, attachments=[file])
-        else:
-            await interaction.response.edit_message(embed=embed, view=self)
-    
-    @discord.ui.button(label="Yesterday", custom_id="yesterday", style=discord.ButtonStyle.secondary)
-    async def yesterday_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.current_tab = "yesterday"
-        self.update_buttons()
-        embed, file = self.generate_composite_image(self.current_tab)
-        if file:
-            await interaction.response.edit_message(view=self, attachments=[file])
-        else:
-            await interaction.response.edit_message(embed=embed, view=self)
-    
-    @discord.ui.button(label="Monthly", custom_id="monthly", style=discord.ButtonStyle.secondary)
-    async def monthly_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.current_tab = "monthly"
-        self.update_buttons()
-        embed, file = self.generate_composite_image(self.current_tab)
-        if file:
-            await interaction.response.edit_message(view=self, attachments=[file])
-        else:
-            await interaction.response.edit_message(embed=embed, view=self)
+        # Rendert das Bild mit den gespeicherten Daten
+        img_io = create_stats_composite_image(
+            self.level_value, self.prestige_icon, self.ign, tab_name,
+            tab_data['wins'], tab_data['losses'], tab_data['wlr'], 
+            tab_data['kills'], tab_data['deaths'], tab_data['kdr'],
+            self.ign_color, self.guild_tag, 
+            playtime_seconds=tab_data['playtime'] # Übergabe der Sekunden
+        )
+        return discord.File(img_io, filename=f"{self.ign}_{tab_name}.png")
+
+    async def handle_tab_click(self, interaction: discord.Interaction, tab_name: str):
+        self.current_tab = tab_name
+        self.update_button_styles()
+        file = self.generate_composite_image(tab_name)
+        # Wichtig: View=self mitgeben, damit die Styles aktualisiert werden
+        await interaction.response.edit_message(attachments=[file], view=self)
+
+    @discord.ui.button(label="All-time", custom_id="all-time")
+    async def all_time(self, interaction, button):
+        await self.handle_tab_click(interaction, "all-time")
+
+    @discord.ui.button(label="Session", custom_id="session")
+    async def session(self, interaction, button):
+        await self.handle_tab_click(interaction, "session")
+
+    @discord.ui.button(label="Daily", custom_id="daily")
+    async def daily(self, interaction, button):
+        await self.handle_tab_click(interaction, "daily")
+
+    @discord.ui.button(label="Yesterday", custom_id="yesterday")
+    async def yesterday(self, interaction, button):
+        await self.handle_tab_click(interaction, "yesterday")
+
+    @discord.ui.button(label="Monthly", custom_id="monthly")
+    async def monthly(self, interaction, button):
+        await self.handle_tab_click(interaction, "monthly")
 
 # Extended stats view (Template.xlsx layout)
 class StatsFullView(discord.ui.View):
@@ -2839,69 +2578,44 @@ class LeaderboardView(discord.ui.View):
     def _collect_leaderboard(self, period: str):
         col = self.column_map[period]
         metric_label = self.metric_labels[self.metric]
-
         leaderboard = []
+
+        # user_colors.json laden
+        all_user_data = {}
+        if os.path.exists(USER_COLORS_FILE):
+            with open(USER_COLORS_FILE, 'r') as f:
+                all_user_data = json.load(f)
+
         for sheet_name in self.wb.sheetnames:
-            if sheet_name.casefold() == "sheep wars historical data":
-                continue
+            if sheet_name.casefold() == "sheep wars historical data": continue
             try:
                 sheet = self.wb[sheet_name]
+                # Stat-Wert aus der korrekten Spalte lesen
+                val = _to_number(sheet[f"{col}15"].value) 
 
-                # Find stat rows dynamically
-                stat_rows = {}
-                for i in range(1, 100):
-                    stat_name = sheet[f'A{i}'].value
-                    if stat_name:
-                        stat_key = str(stat_name).lower()
-                        if stat_key not in stat_rows:  # Store first occurrence
-                            stat_rows[stat_key] = i
-
-                metric_value = None
-
-                if self.metric == "kdr":
-                    kills = _to_number(sheet[f"{col}{stat_rows.get('kills', 1)}"].value)
-                    deaths = _to_number(sheet[f"{col}{stat_rows.get('deaths', 1)}"].value)
-                    metric_value = round(kills / deaths, 2) if deaths > 0 else kills
-                elif self.metric == "wlr":
-                    wins = _to_number(sheet[f"{col}{stat_rows.get('wins', 1)}"].value)
-                    losses = _to_number(sheet[f"{col}{stat_rows.get('losses', 1)}"].value)
-                    metric_value = round(wins / losses, 2) if losses > 0 else wins
-                else:
-                    metric_key = self.metric
-                    if metric_key in stat_rows:
-                        value = sheet[f"{col}{stat_rows[metric_key]}"].value
-                        metric_value = _to_number(value)
-
-                if metric_value is not None and isinstance(metric_value, (int, float)):
-                    try:
-                        level_value = 0
-                        level_row = None
-                        exp_row = None
-                        for i in range(1, 100):
-                            name = sheet[f'A{i}'].value
-                            if not name:
-                                continue
-                            key = str(name).lower()
-                            if key == 'level' and level_row is None:
-                                level_row = i
-                            elif key == 'experience' and exp_row is None:
-                                exp_row = i
-                        if level_row is not None:
-                            level_value = int(sheet[f'B{level_row}'].value or 0)
-                        elif exp_row is not None:
-                            exp = sheet[f'B{exp_row}'].value or 0
-                            level_value = int((exp or 0) / 5000)
-                    except Exception:
-                        level_value = 0
-
+                if val is not None:
+                    # Level & Prestige Icons
+                    level_value = int(sheet["B4"].value or 0)
                     icon = get_prestige_icon(level_value)
-                    is_playtime = self.metric == "playtime"
-                    ign_color = self.user_colors.get(sheet_name.lower())
+                    
+                    # Guild-Informationen aus JSON extrahieren
+                    user_info = all_user_data.get(sheet_name.lower(), {})
+                    if isinstance(user_info, str):
+                        ign_color = user_info
+                        g_tag = None
+                        g_hex = "#AAAAAA"
+                    else:
+                        ign_color = user_info.get('color', '#FFFFFF')
+                        g_tag = user_info.get('guild_tag')
+                        g_color_text = str(user_info.get('guild_color', 'GRAY')).upper()
+                        # Nutzt dein bestehendes Mapping MINECRAFT_NAME_TO_HEX für unbegrenzte Farben
+                        g_hex = MINECRAFT_NAME_TO_HEX.get(g_color_text, "#AAAAAA")
 
-                    leaderboard.append((sheet_name, float(metric_value), metric_value, is_playtime, level_value, icon, ign_color))
-
-            except Exception:
-                continue
+                    leaderboard.append((
+                        sheet_name, float(val), val, (self.metric == "playtime"),
+                        level_value, icon, ign_color, g_tag, g_hex
+                    ))
+            except: continue
 
         leaderboard.sort(key=lambda x: x[1], reverse=True)
         return metric_label, leaderboard
@@ -2924,13 +2638,9 @@ class LeaderboardView(discord.ui.View):
 
         image_data = []
         for idx, entry in enumerate(sliced):
-            player = entry[0]
-            value = entry[2]
-            is_playtime = entry[3]
-            level_value = entry[4]
-            icon = entry[5]
-            ign_color = entry[6]
-            image_data.append((start_index + idx + 1, player, level_value, icon, ign_color, value, is_playtime))
+            player, _, value, is_playtime, level, icon, p_hex, g_tag, g_hex = entry
+            rank = start_index + idx + 1
+            image_data.append((rank, player, level, icon, p_hex, g_tag, g_hex, value, is_playtime))
 
         if Image is not None:
             try:
@@ -3070,20 +2780,6 @@ class RatioLeaderboardView(discord.ui.View):
             "exp_per_game": "EXP/Game",
         }
         
-        # Load user colors
-        self.user_colors = {}
-        try:
-            if os.path.exists(USER_COLORS_FILE):
-                with open(USER_COLORS_FILE, 'r') as f:
-                    color_data = json.load(f)
-                    for username, user_entry in color_data.items():
-                        if isinstance(user_entry, str):
-                            self.user_colors[username] = user_entry
-                        elif isinstance(user_entry, dict):
-                            self.user_colors[username] = user_entry.get('color')
-        except Exception as e:
-            print(f"[WARNING] Failed to load user colors: {e}")
-
         # Period selector dropdown
         self.period_select = RatioPeriodSelect(self)
         self.add_item(self.period_select)
@@ -3093,6 +2789,12 @@ class RatioLeaderboardView(discord.ui.View):
         metric_label = self.metric_labels[self.metric]
 
         leaderboard = []
+        
+        all_user_data = {}
+        if os.path.exists(USER_COLORS_FILE):
+            with open(USER_COLORS_FILE, 'r') as f:
+                all_user_data = json.load(f)
+                
         for sheet_name in self.wb.sheetnames:
             if sheet_name.casefold() == "sheep wars historical data":
                 continue
@@ -3189,9 +2891,19 @@ class RatioLeaderboardView(discord.ui.View):
                         level_value = 0
 
                     icon = get_prestige_icon(level_value)
-                    ign_color = self.user_colors.get(sheet_name.lower())
+                    
+                    user_info = all_user_data.get(sheet_name.lower(), {})
+                    if isinstance(user_info, str):
+                        ign_color = user_info
+                        g_tag = None
+                        g_hex = "#AAAAAA"
+                    else:
+                        ign_color = user_info.get('color', '#FFFFFF')
+                        g_tag = user_info.get('guild_tag')
+                        g_color_text = str(user_info.get('guild_color', 'GRAY')).upper()
+                        g_hex = MINECRAFT_NAME_TO_HEX.get(g_color_text, "#AAAAAA")
 
-                    leaderboard.append((sheet_name, float(metric_value), metric_value, level_value, icon, ign_color))
+                    leaderboard.append((sheet_name, float(metric_value), metric_value, level_value, icon, ign_color, g_tag, g_hex))
 
             except Exception:
                 continue
@@ -3217,12 +2929,9 @@ class RatioLeaderboardView(discord.ui.View):
 
         image_data = []
         for idx, entry in enumerate(sliced):
-            player = entry[0]
-            value = entry[2]
-            level_value = entry[3]
-            icon = entry[4]
-            ign_color = entry[5]
-            image_data.append((start_index + idx + 1, player, level_value, icon, ign_color, value, False))
+            player, _, value, level_value, icon, ign_color, g_tag, g_hex = entry
+            rank = start_index + idx + 1
+            image_data.append((rank, player, level_value, icon, ign_color, g_tag, g_hex, value, False))
 
         if Image is not None:
             try:
@@ -4342,164 +4051,58 @@ async def deathdistribution(interaction: discord.Interaction, ign: str = None):
     except Exception as e:
         await interaction.followup.send(f"[ERROR] {str(e)}")
 
-@bot.tree.command(name="sheepwars", description="Get player stats with deltas")
-@discord.app_commands.describe(ign="Minecraft IGN (optional if you set /default)")
-async def sheepwars(interaction: discord.Interaction, ign: str = None):
-    print(f"[DEBUG] /sheepwars triggered for IGN: {ign} by user: {interaction.user.name} in guild: {interaction.guild.name if interaction.guild else 'DM'}")
-    # Resolve default IGN if not provided
-    if ign is None or str(ign).strip() == "":
-        default_ign = get_default_user(interaction.user.id)
-        if not default_ign:
-            await interaction.response.send_message("You don't have a default username set. Use /default to set one.", ephemeral=True)
-            return
-        ign = default_ign
-    # Validate username early
-    ok, proper_ign = validate_and_normalize_ign(ign)
-    if not ok:
-        await interaction.response.send_message(f"The username {ign} is invalid.", ephemeral=True)
+@bot.tree.command(name="sheepwars", description="Get player stats")
+async def sheepwars(interaction: discord.Interaction, ign: str):
+    await interaction.response.defer()
+    
+    EXCEL_FILE = BOT_DIR / "stats.xlsx"
+    if not EXCEL_FILE.exists():
+        await interaction.followup.send("Stats file not found.")
         return
-    ign = proper_ign
-    
-    # Defer FIRST, before any long operations
-    if not interaction.response.is_done():
-        try:
-            print(f"[DEBUG] Deferring interaction for {ign}")
-            await interaction.response.defer()
-            print(f"[DEBUG] Defer successful for {ign}")
-        except (discord.errors.NotFound, discord.errors.HTTPException) as e:
-            # Interaction expired or already acknowledged - nothing we can do
-            print(f"[DEBUG] Defer failed for {ign}: {e}")
-            return
-    
-    try:
-        # Fetch fresh stats using api_get.py (updates all-time only, no snapshots)
-        print(f"[DEBUG] Running api_get.py for IGN: {ign}")
-        result = run_script("api_get.py", ["-ign", ign])
-        print(f"[DEBUG] api_get.py returncode: {result.returncode}")
-        print(f"[DEBUG] api_get.py stdout: {result.stdout if result.stdout else 'None'}")
-        print(f"[DEBUG] api_get.py stderr: {result.stderr if result.stderr else 'None'}")
-        
-        # Check if we got rate limited (429)
-        if result.returncode == 0 and result.stdout:
-            try:
-                output = json.loads(result.stdout)
-                if output.get("skipped") and output.get("reason") == "rate_limited":
-                    # Rate limited - use existing data from Excel instead of failing
-                    print(f"[DEBUG] Rate limited for {ign}, using existing data")
-            except (json.JSONDecodeError, ValueError):
-                # Not JSON output, continue normally
-                pass
-        
-        if result.returncode != 0:
-            # Check if it's a rate limit error
-            if result.stderr and "429" in result.stderr:
-                # Rate limited - try to use existing data
-                print(f"[DEBUG] Rate limited for {ign}, attempting to use existing data")
-            else:
-                error_msg = result.stderr or result.stdout or "Unknown error"
-                await interaction.followup.send(f"[ERROR] Failed to fetch stats:\n```{error_msg[:500]}```")
-                return
-        
-        # Read Excel file and get stats
-        EXCEL_FILE = BOT_DIR / "stats.xlsx"
-        if not EXCEL_FILE.exists():
-            await interaction.followup.send("[ERROR] Excel file not found")
-            return
-        
-        wb = None
-        try:
-            # FAILSAFE: Load workbook with guaranteed cleanup
-            wb = load_workbook(EXCEL_FILE, read_only=True, data_only=True)
-            
-            # Find sheet case-insensitively
-            key = ign.casefold()
-            found_sheet = None
-            actual_ign = ign  # Store the actual sheet name (proper case)
-            for sheet_name in wb.sheetnames:
-                if sheet_name.casefold() == key:
-                    found_sheet = wb[sheet_name]
-                    actual_ign = sheet_name  # Get the properly cased username
-                    break
-            
-            if found_sheet is None:
-                if wb is not None:
-                    wb.close()
-            
-            if found_sheet is None:
-                await interaction.followup.send(f"[ERROR] Player sheet '{ign}' not found")
-                return
-            
-            # Pull level and prestige icon for title decoration
-            try:
-                # Prefer explicit 'level' row if present; fallback to deriving from 'experience'
-                level_value = 0
-                level_row = None
-                exp_row = None
-                for i in range(1, 100):
-                    name = found_sheet[f'A{i}'].value
-                    if not name:
-                        continue
-                    key = str(name).lower()
-                    if key == 'level' and level_row is None:
-                        level_row = i
-                    elif key == 'experience' and exp_row is None:
-                        exp_row = i
-                if level_row is not None:
-                    level_value = int(found_sheet[f'B{level_row}'].value or 0)
-                elif exp_row is not None:
-                    exp = found_sheet[f'B{exp_row}'].value or 0
-                    level_value = int((exp or 0) / 5000)
-            except Exception:
-                level_value = 0
-            prestige_icon = get_prestige_icon(level_value)
 
-            # Check if user is being tracked
-            tracked_users = load_tracked_users()
-            is_tracked = any(u.casefold() == actual_ign.casefold() for u in tracked_users)
-            print(f"[SHEEPWARS] User '{actual_ign}' is_tracked={is_tracked}")
-            print(f"[SHEEPWARS] Tracked users: {tracked_users}")
-            
-            # Create view with tabs using actual_ign (properly cased)
-            view = StatsTabView(found_sheet, actual_ign, level_value, prestige_icon)
-            
-            # Reload color after API fetch (api_get.py may have just saved rank/color)
-            view._load_color()
-            
-            embed, file = view.generate_composite_image("all-time")
-            
-            if file:
-                if is_tracked:
-                    # Show view with buttons for tracked users
-                    await interaction.followup.send(view=view, file=file)
-                else:
-                    # No view for untracked users, show message instead
-                    message = f"{actual_ign} is not being tracked. Use `/track ign:{actual_ign}` first to see delta-based stats."
-                    await interaction.followup.send(content=message, file=file)
-                    # Schedule cleanup for untracked user after 1 minute
-                    print(f"[SHEEPWARS] Scheduling cleanup for untracked user '{actual_ign}' (has file)")
-                    bot.loop.create_task(cleanup_untracked_user_delayed(actual_ign, delay_seconds=60))
-                    return
-            else:
-                if is_tracked:
-                    await interaction.followup.send(embed=embed, view=view)
-                else:
-                    message = f"{actual_ign} is not being tracked. Use `/track ign:{actual_ign}` first to see delta-based stats."
-                    await interaction.followup.send(content=message, embed=embed)
-                    # Schedule cleanup for untracked user after 1 minute
-                    print(f"[SHEEPWARS] Scheduling cleanup for untracked user '{actual_ign}' (no file)")
-                    bot.loop.create_task(cleanup_untracked_user_delayed(actual_ign, delay_seconds=60))
-                    return
-        finally:
-            if wb is not None:
-                try:
-                    wb.close()
-                except Exception:
-                    pass
+    wb = load_workbook(EXCEL_FILE, data_only=True)
+    sheet = None
+    for s in wb.sheetnames:
+        if s.lower() == ign.lower():
+            sheet = wb[s]
+            break
+    
+    if not sheet:
+        await interaction.followup.send("Player not found in database.")
+        wb.close()
+        return
+
+    # DATEN EINLESEN FÜR ALLE ZEITRÄUME
+    all_data = {}
+    # Spalten-Mapping: B=All-time, C=Session, E=Daily, G=Yesterday, I=Monthly
+    col_map = {
+        "all-time": "B", 
+        "session": "C", 
+        "daily": "E", 
+        "yesterday": "G", 
+        "monthly": "I"
+    }
+    
+    for tab, col in col_map.items():
+        # Stat-Reihen basierend auf deiner Excel
+        w = _to_number(sheet[f"{col}14"].value) # Wins
+        l = _to_number(sheet[f"{col}10"].value) # Losses
+        k = _to_number(sheet[f"{col}15"].value) # Kills
+        d = _to_number(sheet[f"{col}7"].value)  # Deaths
+        p = _to_number(sheet[f"{col}22"].value) # Playtime (Sekunden)
         
-    except subprocess.TimeoutExpired:
-        await interaction.followup.send("[ERROR] Command timed out (30s limit)")
-    except Exception as e:
-        await interaction.followup.send(f"[ERROR] {str(e)}")
+        all_data[tab] = {
+            'wins': w, 'losses': l, 'kills': k, 'deaths': d, 'playtime': p,
+            'wlr': w/l if l > 0 else w,
+            'kdr': k/d if d > 0 else k
+        }
+
+    level = _to_number(sheet["B4"].value)
+    wb.close() # Datei sicher schließen
+
+    view = StatsTabView(all_data, ign, int(level), "❤")
+    file = view.generate_composite_image("all-time")
+    await interaction.followup.send(file=file, view=view)
 
 # Standalone leaderboard commands
 @bot.tree.command(name="leaderboard", description="View player leaderboards")
