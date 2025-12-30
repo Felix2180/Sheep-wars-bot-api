@@ -12,7 +12,47 @@ from openpyxl.utils import get_column_letter
 
 SCRIPT_DIR = Path(__file__).parent.absolute()
 EXCEL_FILE = str(SCRIPT_DIR / "stats.xlsx")
+LOCK_FILE = str(SCRIPT_DIR / "stats.xlsx.lock")
 STAT_ORDER = ["Kills", "Deaths", "K/D", "Wins", "Losses", "W/L"]
+
+class FileLock:
+    """Simple file-based lock to prevent concurrent Excel writes."""
+    def __init__(self, lock_file, timeout=20, delay=0.1):
+        self.lock_file = lock_file
+        self.timeout = timeout
+        self.delay = delay
+        self._fd = None
+
+    def __enter__(self):
+        start_time = time.time()
+        while True:
+            try:
+                # Exclusive creation of lock file
+                self._fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+                break
+            except FileExistsError:
+                # Check for stale lock (older than 60 seconds)
+                try:
+                    if os.path.exists(self.lock_file) and time.time() - os.stat(self.lock_file).st_mtime > 60:
+                        try:
+                            os.remove(self.lock_file)
+                        except OSError:
+                            pass
+                        continue
+                except OSError:
+                    pass
+                if time.time() - start_time >= self.timeout:
+                    raise TimeoutError(f"Could not acquire lock on {self.lock_file}")
+                time.sleep(self.delay)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._fd is not None:
+            os.close(self._fd)
+            try:
+                os.remove(self.lock_file)
+            except OSError:
+                pass
 
 def safe_save_workbook(wb, filepath: str) -> bool:
     """Safely save a workbook with backup and error recovery.
@@ -492,79 +532,80 @@ def api_update_sheet(username: str, api_key: str, snapshot_sections: set[str] | 
             print(f"[WARNING] Rate limited (429) for {username}. Attempting snapshot fallback.")
             snapshots_written = False
             wb = None
-            try:
-                # FAILSAFE: Load workbook with guaranteed cleanup
-                wb = ensure_workbook(EXCEL_FILE)
+            with FileLock(LOCK_FILE):
+                try:
+                    # FAILSAFE: Load workbook with guaranteed cleanup
+                    wb = ensure_workbook(EXCEL_FILE)
 
-                # Find the user's sheet case-insensitively
-                target_sheet = None
-                key = username.casefold()
-                for sheet_name in wb.sheetnames:
-                    if sheet_name.casefold() == key:
-                        target_sheet = wb[sheet_name]
-                        break
+                    # Find the user's sheet case-insensitively
+                    target_sheet = None
+                    key = username.casefold()
+                    for sheet_name in wb.sheetnames:
+                        if sheet_name.casefold() == key:
+                            target_sheet = wb[sheet_name]
+                            break
 
-                # Verify single-table layout headers
-                def is_single_table_layout(ws) -> bool:
-                    expected = [
-                        "Stat",
-                        "All-time",
-                        "Session Delta",
-                        "Session Snapshot",
-                        "Daily Delta",
-                        "Daily Snapshot",
-                        "Yesterday Delta",
-                        "Yesterday Snapshot",
-                        "Monthly Delta",
-                        "Monthly Snapshot",
-                    ]
-                    for i, title in enumerate(expected, start=1):
-                        cell_val = (ws.cell(row=1, column=i).value or "").strip()
-                        if cell_val != title:
-                            return False
-                    return True
+                    # Verify single-table layout headers
+                    def is_single_table_layout(ws) -> bool:
+                        expected = [
+                            "Stat",
+                            "All-time",
+                            "Session Delta",
+                            "Session Snapshot",
+                            "Daily Delta",
+                            "Daily Snapshot",
+                            "Yesterday Delta",
+                            "Yesterday Snapshot",
+                            "Monthly Delta",
+                            "Monthly Snapshot",
+                        ]
+                        for i, title in enumerate(expected, start=1):
+                            cell_val = (ws.cell(row=1, column=i).value or "").strip()
+                            if cell_val != title:
+                                return False
+                        return True
 
-                # Write snapshots from existing All-time values and zero deltas
-                if target_sheet and is_single_table_layout(target_sheet) and snapshot_sections:
-                    at_col = 2
-                    sess_delta_col, sess_snap_col = 3, 4
-                    daily_delta_col, daily_snap_col = 5, 6
-                    yest_delta_col, yest_snap_col = 7, 8
-                    mon_delta_col, mon_snap_col = 9, 10
+                    # Write snapshots from existing All-time values and zero deltas
+                    if target_sheet and is_single_table_layout(target_sheet) and snapshot_sections:
+                        at_col = 2
+                        sess_delta_col, sess_snap_col = 3, 4
+                        daily_delta_col, daily_snap_col = 5, 6
+                        yest_delta_col, yest_snap_col = 7, 8
+                        mon_delta_col, mon_snap_col = 9, 10
 
-                    for row in range(2, target_sheet.max_row + 1):
-                        cur = target_sheet.cell(row=row, column=at_col).value or 0
-                        if "session" in snapshot_sections:
-                            target_sheet.cell(row=row, column=sess_snap_col, value=cur)
-                            target_sheet.cell(row=row, column=sess_delta_col, value=0)
-                        if "daily" in snapshot_sections:
-                            target_sheet.cell(row=row, column=daily_snap_col, value=cur)
-                            target_sheet.cell(row=row, column=daily_delta_col, value=0)
-                        if "yesterday" in snapshot_sections:
-                            target_sheet.cell(row=row, column=yest_snap_col, value=cur)
-                            target_sheet.cell(row=row, column=yest_delta_col, value=0)
-                        if "monthly" in snapshot_sections:
-                            target_sheet.cell(row=row, column=mon_snap_col, value=cur)
-                            target_sheet.cell(row=row, column=mon_delta_col, value=0)
+                        for row in range(2, target_sheet.max_row + 1):
+                            cur = target_sheet.cell(row=row, column=at_col).value or 0
+                            if "session" in snapshot_sections:
+                                target_sheet.cell(row=row, column=sess_snap_col, value=cur)
+                                target_sheet.cell(row=row, column=sess_delta_col, value=0)
+                            if "daily" in snapshot_sections:
+                                target_sheet.cell(row=row, column=daily_snap_col, value=cur)
+                                target_sheet.cell(row=row, column=daily_delta_col, value=0)
+                            if "yesterday" in snapshot_sections:
+                                target_sheet.cell(row=row, column=yest_snap_col, value=cur)
+                                target_sheet.cell(row=row, column=yest_delta_col, value=0)
+                            if "monthly" in snapshot_sections:
+                                target_sheet.cell(row=row, column=mon_snap_col, value=cur)
+                                target_sheet.cell(row=row, column=mon_delta_col, value=0)
 
-                    if not safe_save_workbook(wb, EXCEL_FILE):
-                        print("[ERROR] Snapshot fallback save failed.")
+                        if not safe_save_workbook(wb, EXCEL_FILE):
+                            print("[ERROR] Snapshot fallback save failed.")
+                        else:
+                            snapshots_written = True
                     else:
-                        snapshots_written = True
-                else:
-                    print("[INFO] No suitable sheet/layout found for snapshot fallback.")
+                        print("[INFO] No suitable sheet/layout found for snapshot fallback.")
 
-            except Exception as fe:
-                print(f"[ERROR] Snapshot fallback failed: {fe}")
-                
-            finally:
-                # FAILSAFE: Always close workbook even if an error occurs
-                if wb is not None:
-                    try:
-                        wb.close()
-                        print("[CLEANUP] Fallback workbook closed")
-                    except Exception as close_err:
-                        print(f"[WARNING] Error closing fallback workbook: {close_err}")
+                except Exception as fe:
+                    print(f"[ERROR] Snapshot fallback failed: {fe}")
+                    
+                finally:
+                    # FAILSAFE: Always close workbook even if an error occurs
+                    if wb is not None:
+                        try:
+                            wb.close()
+                            print("[CLEANUP] Fallback workbook closed")
+                        except Exception as close_err:
+                            print(f"[WARNING] Error closing fallback workbook: {close_err}")
 
             # Return structured result indicating fallback outcome
             return {
@@ -613,219 +654,237 @@ def api_update_sheet(username: str, api_key: str, snapshot_sections: set[str] | 
 
     # Open workbook (create if missing) and create/select player's sheet
     # FAILSAFE: Workbook is guaranteed to be closed in the finally block below
-    wb = ensure_workbook(EXCEL_FILE)
-    
-    try:
-        # Detect if existing sheet already uses the single-table layout; if not, rebuild it.
-        def is_single_table_layout(ws) -> bool:
-            expected = [
-                "Stat",
-                "All-time",
-                "Session Delta",
-                "Session Snapshot",
-                "Daily Delta",
-                "Daily Snapshot",
-                "Yesterday Delta",
-                "Yesterday Snapshot",
-                "Monthly Delta",
-                "Monthly Snapshot",
-            ]
-            for i, title in enumerate(expected, start=1):
-                cell_val = ws.cell(row=1, column=i).value
-                if (cell_val or "").strip() != title:
-                    return False
-            return True
+    with FileLock(LOCK_FILE):
+        wb = ensure_workbook(EXCEL_FILE)
+        
+        try:
+            # Detect if existing sheet already uses the single-table layout; if not, rebuild it.
+            def is_single_table_layout(ws) -> bool:
+                expected = [
+                    "Stat",
+                    "All-time",
+                    "Session Delta",
+                    "Session Snapshot",
+                    "Daily Delta",
+                    "Daily Snapshot",
+                    "Yesterday Delta",
+                    "Yesterday Snapshot",
+                    "Monthly Delta",
+                    "Monthly Snapshot",
+                ]
+                for i, title in enumerate(expected, start=1):
+                    cell_val = ws.cell(row=1, column=i).value
+                    if (cell_val or "").strip() != title:
+                        return False
+                return True
 
-        if proper_username in wb.sheetnames:
-            ws = wb[proper_username]
-            # If not the new layout, clear and rebuild
-            if not is_single_table_layout(ws):
-                ws.delete_rows(1, ws.max_row)
-                ws.delete_cols(1, ws.max_column)
-                new_sheet = True
+            if proper_username in wb.sheetnames:
+                ws = wb[proper_username]
+                # If not the new layout, clear and rebuild
+                if not is_single_table_layout(ws):
+                    ws.delete_rows(1, ws.max_row)
+                    ws.delete_cols(1, ws.max_column)
+                    new_sheet = True
+                else:
+                    new_sheet = False
             else:
-                new_sheet = False
-        else:
-            ws = wb.create_sheet(proper_username)
-            new_sheet = True
+                ws = wb.create_sheet(proper_username)
+                new_sheet = True
 
-        # Build ordered key list: preferred first, then any remaining keys
-        preferred = [
-            "available_layers",
-            "experience",
-            "level",
-            "coins",
-            "damage_dealt",
-            "deaths",
-            "deaths_explosive",
-            "games_played",
-            "losses",
-            "sheep_thrown",
-            "deaths_bow",
-            "deaths_void",
-            "wins",
-            "kills",
-            "kills_void",
-            "magic_wool_hit",
-            "kills_explosive",
-            "kills_melee",
-            "deaths_melee",
-            "kills_bow",
-            "playtime",
-        ]
-        ordered_keys = []
-        seen = set()
-        for k in preferred:
-            if k in current and k not in seen:
-                ordered_keys.append(k)
-                seen.add(k)
-        for k in sorted(current.keys()):
-            if k not in seen:
-                ordered_keys.append(k)
-                seen.add(k)
+            # Build ordered key list: preferred first, then any remaining keys
+            preferred = [
+                "available_layers",
+                "experience",
+                "level",
+                "coins",
+                "damage_dealt",
+                "deaths",
+                "deaths_explosive",
+                "games_played",
+                "losses",
+                "sheep_thrown",
+                "deaths_bow",
+                "deaths_void",
+                "wins",
+                "kills",
+                "kills_void",
+                "magic_wool_hit",
+                "kills_explosive",
+                "kills_melee",
+                "deaths_melee",
+                "kills_bow",
+                "playtime",
+            ]
+            ordered_keys = []
+            seen = set()
+            for k in preferred:
+                if k in current and k not in seen:
+                    ordered_keys.append(k)
+                    seen.add(k)
+            for k in sorted(current.keys()):
+                if k not in seen:
+                    ordered_keys.append(k)
+                    seen.add(k)
 
-        # Single table layout (no gaps):
-        # A: Stat label, B: All-time, C: Session Delta, D: Session Snapshot,
-        # E: Daily Delta, F: Daily Snapshot, G: Yesterday Delta, H: Yesterday Snapshot,
-        # I: Monthly Delta, J: Monthly Snapshot
-        label_col = 1
-        at_col = 2
-        sess_delta_col, sess_snap_col = 3, 4
-        daily_delta_col, daily_snap_col = 5, 6
-        yest_delta_col, yest_snap_col = 7, 8
-        mon_delta_col, mon_snap_col = 9, 10
+            # Single table layout (no gaps):
+            # A: Stat label, B: All-time, C: Session Delta, D: Session Snapshot,
+            # E: Daily Delta, F: Daily Snapshot, G: Yesterday Delta, H: Yesterday Snapshot,
+            # I: Monthly Delta, J: Monthly Snapshot
+            label_col = 1
+            at_col = 2
+            sess_delta_col, sess_snap_col = 3, 4
+            daily_delta_col, daily_snap_col = 5, 6
+            yest_delta_col, yest_snap_col = 7, 8
+            mon_delta_col, mon_snap_col = 9, 10
 
-        # Headers row
-        headers = [
-            (label_col, "Stat"),
-            (at_col, "All-time"),
-            (sess_delta_col, "Session Delta"),
-            (sess_snap_col, "Session Snapshot"),
-            (daily_delta_col, "Daily Delta"),
-            (daily_snap_col, "Daily Snapshot"),
-            (yest_delta_col, "Yesterday Delta"),
-            (yest_snap_col, "Yesterday Snapshot"),
-            (mon_delta_col, "Monthly Delta"),
-            (mon_snap_col, "Monthly Snapshot"),
-        ]
-        for col, title in headers:
-            c = ws.cell(row=1, column=col)
-            c.value = title
-            c.font = Font(bold=True)
-            c.alignment = Alignment(horizontal="center")
+            # Headers row
+            headers = [
+                (label_col, "Stat"),
+                (at_col, "All-time"),
+                (sess_delta_col, "Session Delta"),
+                (sess_snap_col, "Session Snapshot"),
+                (daily_delta_col, "Daily Delta"),
+                (daily_snap_col, "Daily Snapshot"),
+                (yest_delta_col, "Yesterday Delta"),
+                (yest_snap_col, "Yesterday Snapshot"),
+                (mon_delta_col, "Monthly Delta"),
+                (mon_snap_col, "Monthly Snapshot"),
+            ]
+            for col, title in headers:
+                c = ws.cell(row=1, column=col)
+                c.value = title
+                c.font = Font(bold=True)
+                c.alignment = Alignment(horizontal="center")
 
-        # Populate rows
-        for idx, key in enumerate(ordered_keys):
-            row = 2 + idx
-            # Label
-            ws.cell(row=row, column=label_col, value=key)
-            # All-time value
-            ws.cell(row=row, column=at_col, value=current.get(key))
-            # Reserve delta and snapshot cells. We'll compute numeric deltas after
-            # snapshot columns are optionally updated below so deltas reflect
-            # the correct (current - snapshot_before_update) values or zero when
-            # snapshot is set to currently set to empty
-            # leave delta cells empty for now
-            ws.cell(row=row, column=sess_delta_col, value=None)
-            ws.cell(row=row, column=daily_delta_col, value=None)
-            ws.cell(row=row, column=yest_delta_col, value=None)
-            ws.cell(row=row, column=mon_delta_col, value=None)
+            processed_stats = {}
 
-        # If snapshot flags provided, write snapshot values into appropriate snapshot columns
-        snapshot_sections = snapshot_sections or set()
-        def write_snapshot_column(col_idx: int):
+            # Populate rows
             for idx, key in enumerate(ordered_keys):
                 row = 2 + idx
-                ws.cell(row=row, column=col_idx, value=current.get(key))
+                # Label
+                ws.cell(row=row, column=label_col, value=key)
+                # All-time value
+                ws.cell(row=row, column=at_col, value=current.get(key))
+                # Reserve delta and snapshot cells. We'll compute numeric deltas after
+                # snapshot columns are optionally updated below so deltas reflect
+                # the correct (current - snapshot_before_update) values or zero when
+                # snapshot is set to currently set to empty
+                # leave delta cells empty for now
+                ws.cell(row=row, column=sess_delta_col, value=None)
+                ws.cell(row=row, column=daily_delta_col, value=None)
+                ws.cell(row=row, column=yest_delta_col, value=None)
+                ws.cell(row=row, column=mon_delta_col, value=None)
 
-        if "session" in snapshot_sections:
-            write_snapshot_column(sess_snap_col)
-        if "daily" in snapshot_sections:
-            write_snapshot_column(daily_snap_col)
-        if "yesterday" in snapshot_sections:
-            write_snapshot_column(yest_snap_col)
-        if "monthly" in snapshot_sections:
-            write_snapshot_column(mon_snap_col)
+            # If snapshot flags provided, write snapshot values into appropriate snapshot columns
+            snapshot_sections = snapshot_sections or set()
+            def write_snapshot_column(col_idx: int):
+                for idx, key in enumerate(ordered_keys):
+                    row = 2 + idx
+                    ws.cell(row=row, column=col_idx, value=current.get(key))
 
-        # Compute numeric deltas for each period (current - snapshot). Treat missing
-        # snapshot values as 0. This ensures the bot (which reads cell values)
-        # sees numeric deltas rather than formula strings.
-        for idx, key in enumerate(ordered_keys):
-            row = 2 + idx
-            cur = current.get(key) or 0
-            # Session delta
-            snap_val = ws.cell(row=row, column=sess_snap_col).value
-            try:
-                snap_val = float(snap_val or 0)
-            except Exception:
-                # remove commas and try
-                try:
-                    snap_val = float(str(snap_val).replace(",", ""))
-                except Exception:
-                    snap_val = 0
-            ws.cell(row=row, column=sess_delta_col, value=(cur - snap_val))
-            # Daily delta
-            snap_val = ws.cell(row=row, column=daily_snap_col).value
-            try:
-                snap_val = float(snap_val or 0)
-            except Exception:
-                try:
-                    snap_val = float(str(snap_val).replace(",", ""))
-                except Exception:
-                    snap_val = 0
-            ws.cell(row=row, column=daily_delta_col, value=(cur - snap_val))
-            # Yesterday delta
-            snap_val = ws.cell(row=row, column=yest_snap_col).value
-            try:
-                snap_val = float(snap_val or 0)
-            except Exception:
-                try:
-                    snap_val = float(str(snap_val).replace(",", ""))
-                except Exception:
-                    snap_val = 0
-            ws.cell(row=row, column=yest_delta_col, value=(cur - snap_val))
-            # Monthly delta
-            snap_val = ws.cell(row=row, column=mon_snap_col).value
-            try:
-                snap_val = float(snap_val or 0)
-            except Exception:
-                try:
-                    snap_val = float(str(snap_val).replace(",", ""))
-                except Exception:
-                    snap_val = 0
-            ws.cell(row=row, column=mon_delta_col, value=(cur - snap_val))
+            if "session" in snapshot_sections:
+                write_snapshot_column(sess_snap_col)
+            if "daily" in snapshot_sections:
+                write_snapshot_column(daily_snap_col)
+            if "yesterday" in snapshot_sections:
+                write_snapshot_column(yest_snap_col)
+            if "monthly" in snapshot_sections:
+                write_snapshot_column(mon_snap_col)
 
-        # Force Excel to recalculate formulas on load so deltas show correctly
-        try:
-            wb.calculation_properties.fullCalcOnLoad = True
-        except Exception:
-            # older openpyxl versions may not have calculation_properties
-            pass
+            # Compute numeric deltas for each period (current - snapshot). Treat missing
+            # snapshot values as 0. This ensures the bot (which reads cell values)
+            # sees numeric deltas rather than formula strings.
+            
+            for idx, key in enumerate(ordered_keys):
+                row = 2 + idx
+                cur = current.get(key) or 0
+                # Session delta
+                snap_val = ws.cell(row=row, column=sess_snap_col).value
+                try:
+                    snap_val = float(snap_val or 0)
+                except Exception:
+                    # remove commas and try
+                    try:
+                        snap_val = float(str(snap_val).replace(",", ""))
+                    except Exception:
+                        snap_val = 0
+                sess_delta = cur - snap_val
+                ws.cell(row=row, column=sess_delta_col, value=sess_delta)
+                # Daily delta
+                snap_val = ws.cell(row=row, column=daily_snap_col).value
+                try:
+                    snap_val = float(snap_val or 0)
+                except Exception:
+                    try:
+                        snap_val = float(str(snap_val).replace(",", ""))
+                    except Exception:
+                        snap_val = 0
+                daily_delta = cur - snap_val
+                ws.cell(row=row, column=daily_delta_col, value=daily_delta)
+                # Yesterday delta
+                snap_val = ws.cell(row=row, column=yest_snap_col).value
+                try:
+                    snap_val = float(snap_val or 0)
+                except Exception:
+                    try:
+                        snap_val = float(str(snap_val).replace(",", ""))
+                    except Exception:
+                        snap_val = 0
+                yest_delta = cur - snap_val
+                ws.cell(row=row, column=yest_delta_col, value=yest_delta)
+                # Monthly delta
+                snap_val = ws.cell(row=row, column=mon_snap_col).value
+                try:
+                    snap_val = float(snap_val or 0)
+                except Exception:
+                    try:
+                        snap_val = float(str(snap_val).replace(",", ""))
+                    except Exception:
+                        snap_val = 0
+                mon_delta = cur - snap_val
+                ws.cell(row=row, column=mon_delta_col, value=mon_delta)
 
-        # Use safe save with backup and error recovery
-        save_success = safe_save_workbook(wb, EXCEL_FILE)
-        if not save_success:
-            raise RuntimeError("Failed to save Excel file. Check logs for details.")
+                processed_stats[key.lower()] = {
+                    "lifetime": cur,
+                    "session": sess_delta,
+                    "daily": daily_delta,
+                    "yesterday": yest_delta,
+                    "monthly": mon_delta
+                }
+
+            # Force Excel to recalculate formulas on load so deltas show correctly
+            try:
+                wb.calculation_properties.fullCalcOnLoad = True
+            except Exception:
+                # older openpyxl versions may not have calculation_properties
+                pass
+
+            # Use safe save with backup and error recovery
+            save_success = safe_save_workbook(wb, EXCEL_FILE)
+            if not save_success:
+                raise RuntimeError("Failed to save Excel file. Check logs for details.")
+            
+            return {
+                "uuid": uuid,
+                "stats": current,
+                "processed_stats": processed_stats,
+                "excel": EXCEL_FILE,
+                "username": proper_username
+            }
         
-        return {
-            "uuid": uuid,
-            "stats": current,
-            "excel": EXCEL_FILE,
-        }
-    
-    except Exception as e:
-        # Log the error and re-raise
-        print(f"[ERROR] Exception occurred during Excel update: {e}")
-        raise
-        
-    finally:
-        # FAILSAFE: Always close the workbook even if an error occurs
-        if wb is not None:
-            try:
-                wb.close()
-                print("[CLEANUP] Workbook closed")
-            except Exception as close_err:
-                print(f"[WARNING] Error closing workbook: {close_err}")
+        except Exception as e:
+            # Log the error and re-raise
+            print(f"[ERROR] Exception occurred during Excel update: {e}")
+            raise
+            
+        finally:
+            # FAILSAFE: Always close the workbook even if an error occurs
+            if wb is not None:
+                try:
+                    wb.close()
+                    print("[CLEANUP] Workbook closed")
+                except Exception as close_err:
+                    print(f"[WARNING] Error closing workbook: {close_err}")
 
 
 def main():
@@ -855,7 +914,7 @@ def main():
         sections.add("monthly")
 
     res = api_update_sheet(args.username, api_key, snapshot_sections=sections)
-    print(res)
+    print(json.dumps(res, default=str))
 
 if __name__ == "__main__":
     main()

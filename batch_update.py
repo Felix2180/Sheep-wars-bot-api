@@ -3,12 +3,53 @@ import subprocess
 import sys
 import argparse
 import shutil
+import time
 from pathlib import Path
 from openpyxl import load_workbook
 
 SCRIPT_DIR = Path(__file__).parent.absolute()
 TRACKED_FILE = str(SCRIPT_DIR / "tracked_users.txt")
 EXCEL_FILE = str(SCRIPT_DIR / "stats.xlsx")
+LOCK_FILE = str(SCRIPT_DIR / "stats.xlsx.lock")
+
+class FileLock:
+    """Simple file-based lock to prevent concurrent Excel writes."""
+    def __init__(self, lock_file, timeout=20, delay=0.1):
+        self.lock_file = lock_file
+        self.timeout = timeout
+        self.delay = delay
+        self._fd = None
+
+    def __enter__(self):
+        start_time = time.time()
+        while True:
+            try:
+                # Exclusive creation of lock file
+                self._fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+                break
+            except FileExistsError:
+                # Check for stale lock (older than 60 seconds)
+                try:
+                    if os.path.exists(self.lock_file) and time.time() - os.stat(self.lock_file).st_mtime > 60:
+                        try:
+                            os.remove(self.lock_file)
+                        except OSError:
+                            pass
+                        continue
+                except OSError:
+                    pass
+                if time.time() - start_time >= self.timeout:
+                    raise TimeoutError(f"Could not acquire lock on {self.lock_file}")
+                time.sleep(self.delay)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._fd is not None:
+            os.close(self._fd)
+            try:
+                os.remove(self.lock_file)
+            except OSError:
+                pass
 
 
 def safe_save_workbook(wb, filepath: str) -> bool:
@@ -104,12 +145,55 @@ def rotate_daily_to_yesterday() -> dict:
                 print(f"[SKIP] {username} - sheet not found", flush=True)
                 results[username] = False
                 continue
+        with FileLock(LOCK_FILE):
+            # FAILSAFE: Load workbook with guaranteed cleanup
+            wb = load_workbook(EXCEL_FILE)
+            users = load_tracked_users()
+            results = {}
             
             ws = wb[username]
+            for username in users:
+                if username not in wb.sheetnames:
+                    print(f"[SKIP] {username} - sheet not found", flush=True)
+                    results[username] = False
+                    continue
+                
+                ws = wb[username]
+                
+                # Check if sheet has the expected layout (column F = Daily Snapshot, H = Yesterday Snapshot)
+                header_f = ws.cell(row=1, column=6).value
+                header_h = ws.cell(row=1, column=8).value
+                
+                if header_f != "Daily Snapshot" or header_h != "Yesterday Snapshot":
+                    print(f"[SKIP] {username} - unexpected layout", flush=True)
+                    results[username] = False
+                    continue
+                
+                # Copy all values from column F (Daily Snapshot) to column H (Yesterday Snapshot)
+                row = 2
+                copied_rows = 0
+                while True:
+                    daily_val = ws.cell(row=row, column=6).value
+                    if daily_val is None and row > 100:  # Stop if we've gone past data
+                        break
+                    
+                    # Copy daily snapshot to yesterday snapshot
+                    ws.cell(row=row, column=8, value=daily_val)
+                    if daily_val is not None:
+                        copied_rows += 1
+                    row += 1
+                
+                print(f"[OK] {username} - copied {copied_rows} rows from daily to yesterday", flush=True)
+                results[username] = True
             
             # Check if sheet has the expected layout (column F = Daily Snapshot, H = Yesterday Snapshot)
             header_f = ws.cell(row=1, column=6).value
             header_h = ws.cell(row=1, column=8).value
+            # Use safe save with backup and error recovery
+            save_success = safe_save_workbook(wb, EXCEL_FILE)
+            if not save_success:
+                print("[ERROR] Failed to save Excel file after rotation", flush=True)
+                return {u: False for u in users}  # Mark all as failed
             
             if header_f != "Daily Snapshot" or header_h != "Yesterday Snapshot":
                 print(f"[SKIP] {username} - unexpected layout", flush=True)
@@ -132,6 +216,8 @@ def rotate_daily_to_yesterday() -> dict:
             
             print(f"[OK] {username} - copied {copied_rows} rows from daily to yesterday", flush=True)
             results[username] = True
+            print(f"\n[SUMMARY] Rotated daily→yesterday for {sum(results.values())}/{len(users)} users", flush=True)
+            return results
         
         # Use safe save with backup and error recovery
         save_success = safe_save_workbook(wb, EXCEL_FILE)
