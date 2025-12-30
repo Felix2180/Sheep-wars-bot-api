@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import json
 from pathlib import Path
 import io
+import math
 import requests
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -27,6 +28,8 @@ DEFAULT_USERS_FILE = os.path.join(os.path.dirname(__file__), "default_users.json
 CREATOR_NAME = "chuckegg"
 # Optionally set a numeric Discord user ID for direct DM (recommended for reliability)
 CREATOR_ID = "542467909549555734"
+ADMIN_IDS = ["542467909549555734", "1040340714824937554"]
+ADMIN_NAMES = ["chuckegg", "felix.6554"]
 CREATOR_TZ = ZoneInfo("America/New_York")
 
 # Font cache to avoid repeatedly searching for fonts
@@ -278,7 +281,7 @@ PRESTIGE_COLORS = {
     1600: (0, 170, 170),     # &3 -> DARK_AQUA
     1700: (255, 85, 255),    # &d -> LIGHT_PURPLE
     1800: (170, 0, 170),     # &5 -> DARK_PURPLE
-    1900: (255, 170, 0),     # &6 -> GOLD
+    1900: None,              # Rainbow
     2000: (0, 170, 0),       # &2 -> DARK_GREEN
     2100: (170, 170, 170),   # &7 -> GRAY
     2200: (255, 255, 85),    # &e -> YELLOW
@@ -288,7 +291,7 @@ PRESTIGE_COLORS = {
     2600: (85, 255, 255),    # &b -> AQUA
     2700: (255, 85, 255),    # &d -> LIGHT_PURPLE
     2800: (170, 0, 170),     # &5 -> DARK_PURPLE
-    2900: (170, 0, 170),     # &5 -> DARK_PURPLE
+    2900: None,              # Rainbow
     3000: (0, 0, 0),         # &0 -> BLACK
     3100: (255, 255, 255),   # &f -> WHITE
     3200: (255, 85, 85),     # &c -> RED
@@ -298,7 +301,7 @@ PRESTIGE_COLORS = {
     3600: (0, 170, 170),     # &3 -> DARK_AQUA
     3700: (255, 85, 255),    # &d -> LIGHT_PURPLE
     3800: (170, 0, 170),     # &5 -> DARK_PURPLE
-    3900: (255, 170, 0),     # &6 -> GOLD
+    3900: None,              # Rainbow
     4000: (85, 85, 85),      # &8 -> DARK_GRAY
 }
 
@@ -840,7 +843,14 @@ def create_stats_composite_image(level, icon, ign, tab_name, wins, losses, wl_ra
     col1_x = margin + skin_w + spacing
     col2_x = col1_x + header_card_w + spacing
     
-    c1 = render_modern_card("IGN", ign, header_card_w, 85, is_header=True, color=(85, 255, 255))
+    ign_rgb = (85, 255, 255)
+    if ign_color:
+        try:
+            ign_rgb = tuple(int(str(ign_color).lstrip('#')[j:j+2], 16) for j in (0, 2, 4))
+        except:
+            pass
+
+    c1 = render_modern_card("IGN", ign, header_card_w, 85, is_header=True, color=ign_rgb)
     c2 = render_modern_card("Level", f"[{int(level)}{icon}]", header_card_w, 85, color=(85, 255, 85))
     c3 = render_modern_card("Mode", tab_name.upper(), header_card_w, 85)
     c4 = render_modern_card("Playtime", formatted_playtime, header_card_w, 85, is_header=True, color=(255, 85, 255))
@@ -1075,12 +1085,13 @@ def create_leaderboard_image(tab_name: str, metric_label: str, leaderboard_data:
         
         # Prestige
         p_text = f"[{level}{icon}]"
+        p_color = get_prestige_color(level)
         rank_w = draw.textbbox((0,0), f"#{rank}", font=font_rank)[2] - draw.textbbox((0,0), f"#{rank}", font=font_rank)[0]
         p_x = margin + 20 + rank_w + 15
-        draw.text((p_x, y + 20), p_text, font=font_small, fill=(180, 180, 180))
+        draw.text((p_x, y + 15), p_text, font=font_name, fill=p_color)
         
         # Name
-        p_w = draw.textbbox((0,0), p_text, font=font_small)[2] - draw.textbbox((0,0), p_text, font=font_small)[0]
+        p_w = draw.textbbox((0,0), p_text, font=font_name)[2] - draw.textbbox((0,0), p_text, font=font_name)[0]
         n_x = p_x + p_w + 10
         try:
             p_rgb = tuple(int(str(p_hex).lstrip('#')[j:j+2], 16) for j in (0, 2, 4))
@@ -1096,7 +1107,7 @@ def create_leaderboard_image(tab_name: str, metric_label: str, leaderboard_data:
                 g_rgb = tuple(int(str(g_hex).lstrip('#')[j:j+2], 16) for j in (0, 2, 4))
             except:
                 g_rgb = (170, 170, 170)
-            draw.text((g_x, y + 20), f"[{g_tag}]", font=font_small, fill=g_rgb)
+            draw.text((g_x, y + 15), f"[{g_tag}]", font=font_name, fill=g_rgb)
         
         # Value
         val_str = format_playtime(int(value)) if is_playtime else f"{value:,}"
@@ -1120,11 +1131,11 @@ def create_distribution_pie(title: str, slices: list) -> io.BytesIO:
     if total <= 0:
         total = 1
 
-    width, height = 860, 560
-    padding = 36
-    legend_height = 180
-    pie_top = 70
-    depth = 36  # vertical extrusion to fake 3D
+    width, height = 1032, 672
+    padding = 45
+    legend_height = 220
+    pie_top = 85
+    depth = 45  # vertical extrusion to fake 3D
     usable_height = height - legend_height - padding - pie_top
     pie_height = max(160, usable_height - depth)
 
@@ -1162,20 +1173,41 @@ def create_distribution_pie(title: str, slices: list) -> io.BytesIO:
     # This ensures all slices are visible at each depth level
     for z in range(depth, -1, -1):  # Include z=0 to eliminate gap
         for start_angle, end_angle, color in slice_angles:
-            # Use the original color for all depth layers to match the top face
+            # Shade the sides to be slightly darker
+            side_color = _shade(color, 0.8)
             offset_bbox = (
                 top_bbox[0],
                 top_bbox[1] + z,
                 top_bbox[2],
                 top_bbox[3] + z,
             )
-            # Use color for both fill and outline to eliminate any gaps between layers
-            draw.pieslice(offset_bbox, start=start_angle, end=end_angle, fill=color, outline=color, width=2)
+            # Use side_color for both fill and outline to eliminate any gaps between layers
+            draw.pieslice(offset_bbox, start=start_angle, end=end_angle, fill=side_color, outline=side_color, width=2)
 
     # Draw separator lines on the top face only (no fill, just outline)
     separator_color = (20, 20, 25)  # Dark separator between slices
+
+    # Draw vertical separators for the visible sides (front face)
+    cx = (top_bbox[0] + top_bbox[2]) / 2
+    cy = (top_bbox[1] + top_bbox[3]) / 2
+    rx = (top_bbox[2] - top_bbox[0]) / 2
+    ry = (top_bbox[3] - top_bbox[1]) / 2
+
+    boundaries = set()
+    for s, e, _ in slice_angles:
+        boundaries.add(s % 360)
+        boundaries.add(e % 360)
+
+    for angle in boundaries:
+        # Only draw separators on the front face (0 to 180 degrees)
+        if 0 <= angle <= 180:
+            rad = math.radians(angle)
+            x = cx + rx * math.cos(rad)
+            y = cy + ry * math.sin(rad)
+            draw.line([(x, y), (x, y + depth)], fill=separator_color, width=2)
+
     for start_angle, end_angle, color in slice_angles:
-        draw.pieslice(top_bbox, start=start_angle, end=end_angle, fill=None, outline=separator_color, width=1)
+        draw.pieslice(top_bbox, start=start_angle, end=end_angle, fill=None, outline=separator_color, width=2)
 
     legend_x = padding + 10
     legend_y = top_bbox[3] + depth + 24
@@ -1299,13 +1331,13 @@ def render_prestige_range_image(base: int, end_display: int) -> io.BytesIO:
 
     combined = []
     combined.extend(start_segments)
-    combined.append((MINECRAFT_CODE_TO_HEX.get('f', '#FFFFFF'), ' \u0013 '))
+    combined.append((MINECRAFT_CODE_TO_HEX.get('7', '#AAAAAA'), ' ➜ '))
     combined.extend(end_segments)
 
     return _render_text_segments_to_image(combined)
 
 
-def render_all_prestiges_combined(spacing: int = 6) -> io.BytesIO:
+def render_all_prestiges_combined(spacing: int = 20) -> io.BytesIO:
     """Render all prestiges as individual images and combine them vertically into one PNG."""
     if Image is None:
         raise RuntimeError("Pillow not available")
@@ -1335,44 +1367,56 @@ def render_all_prestiges_combined(spacing: int = 6) -> io.BytesIO:
         grid.append(row_imgs)
 
     # Compute uniform cell size
-    max_w = max((im.width for row in grid for im in row), default=200)
-    max_h = max((im.height for row in grid for im in row), default=40)
+    max_w = max((im.width for row in grid for im in row), default=200) + 30
+    max_h = max((im.height for row in grid for im in row), default=40) + 20
 
     # Optional title at the top
-    title_text = "Wool Games prestiges 0-4000"
+    title_text = "Wool Games Prestiges"
     try:
-        title_font = _load_font("DejaVuSans-Bold.ttf", 22)
+        title_font = _load_font("DejaVuSans-Bold.ttf", 32)
     except Exception:
         title_font = ImageFont.load_default()
-    title_bbox = Image.new('RGBA', (1,1))
-    draw_tmp = ImageDraw.Draw(title_bbox)
-    tb = draw_tmp.textbbox((0,0), title_text, font=title_font)
-    title_h = tb[3] - tb[1] + 12
+    
+    draw_dummy = ImageDraw.Draw(Image.new('RGBA', (1,1)))
+    tb = draw_dummy.textbbox((0,0), title_text, font=title_font)
+    title_h = tb[3] - tb[1] + 40
 
     cols = len(offsets)
     rows = len(grid)
 
-    total_w = cols * max_w + spacing * (cols - 1)
-    total_h = title_h + rows * max_h + spacing * (rows - 1)
+    margin = 40
+    total_w = margin * 2 + cols * max_w + spacing * (cols - 1)
+    total_h = margin * 2 + title_h + rows * max_h + spacing * (rows - 1)
 
-    combined = Image.new('RGBA', (total_w, total_h), (0,0,0,0))
-
-    # Draw title centered with subtle shadow
+    combined = Image.new('RGBA', (total_w, total_h), (18, 18, 20, 255))
     draw = ImageDraw.Draw(combined)
-    title_x = (total_w) // 2
-    draw.text((title_x+1, 6), title_text, font=title_font, fill=(0,0,0), anchor='mm')
-    draw.text((title_x, 5), title_text, font=title_font, fill=(220,220,220), anchor='mm')
 
-    y = title_h
-    for row in grid:
-        x = 0
-        for im in row:
+    # Draw title centered
+    title_x = total_w // 2
+    title_y = margin + (title_h // 2) - 10
+    draw.text((title_x, title_y), title_text, font=title_font, fill=(255, 255, 255), anchor='mm')
+
+    start_y = margin + title_h
+    for r, row in enumerate(grid):
+        y = start_y + r * (max_h + spacing)
+        base_mod = base_mods[r]
+        for c, im in enumerate(row):
+            x = margin + c * (max_w + spacing)
+            offset = offsets[c]
+            level = base_mod + offset
+            
+            # Determine background color based on text brightness
+            p_color = get_prestige_color(level)
+            #lum = (0.299 * p_color[0] + 0.587 * p_color[1] + 0.114 * p_color[2])
+            bg_color = (35, 30, 45, 255) #if lum < 90 else (35, 30, 45, 255)
+
+            # Draw card background
+            draw.rounded_rectangle([x, y, x + max_w, y + max_h], radius=8, fill=bg_color)
+            
             # center each image within its cell
             paste_x = x + (max_w - im.width) // 2
             paste_y = y + (max_h - im.height) // 2
             combined.paste(im, (paste_x, paste_y), im)
-            x += max_w + spacing
-        y += max_h + spacing
 
     out = io.BytesIO()
     combined.save(out, format='PNG')
@@ -1522,12 +1566,13 @@ def is_user_authorized(discord_user_id: int, ign: str) -> bool:
     key = ign.casefold()
     return links.get(key) == str(discord_user_id)
 
-def is_creator_user(discord_user_id: int) -> bool:
-    """Check if the given Discord user ID matches the creator's ID."""
-    try:
-        return CREATOR_ID is not None and str(discord_user_id) == str(CREATOR_ID)
-    except Exception:
-        return False
+def is_admin(user: discord.User | discord.Member) -> bool:
+    """Check if user is a bot admin."""
+    if str(user.id) in ADMIN_IDS:
+        return True
+    if user.name.casefold() in [n.casefold() for n in ADMIN_NAMES]:
+        return True
+    return False
 
 def remove_tracked_user(ign: str) -> bool:
     """Remove a username from tracked users list"""
@@ -2623,9 +2668,10 @@ class DistributionView(discord.ui.View):
 
 
 class LeaderboardView(discord.ui.View):
-    def __init__(self, metric: str, wb):
+    def __init__(self, metric: str, data_cache: dict):
         super().__init__()
         self.metric = metric
+        self.data_cache = data_cache
         self.current_period = "lifetime"
         self.page = 0
         self.page_size = 10
@@ -2683,55 +2729,6 @@ class LeaderboardView(discord.ui.View):
         self.period_select = LeaderboardPeriodSelect(self)
         self.add_item(self.period_select)
         
-        # Pre-load all data for this metric across all periods
-        self.data_cache = {}
-        for p in self.column_map.keys():
-            self.data_cache[p] = self._load_leaderboard_data(wb, p)
-
-    def _load_leaderboard_data(self, wb, period: str):
-        col = self.column_map[period]
-        leaderboard = []
-
-        # user_colors.json laden
-        all_user_data = {}
-        if os.path.exists(USER_COLORS_FILE):
-            with open(USER_COLORS_FILE, 'r') as f:
-                all_user_data = json.load(f)
-
-        for sheet_name in wb.sheetnames:
-            if sheet_name.casefold() == "sheep wars historical data": continue
-            try:
-                sheet = wb[sheet_name]
-                # Stat-Wert aus der korrekten Spalte lesen
-                val = _to_number(sheet[f"{col}15"].value) 
-
-                if val is not None:
-                    # Level & Prestige Icons
-                    level_value = int(sheet["B4"].value or 0)
-                    icon = get_prestige_icon(level_value)
-                    
-                    # Guild-Informationen aus JSON extrahieren
-                    user_info = all_user_data.get(sheet_name.lower(), {})
-                    if isinstance(user_info, str):
-                        ign_color = user_info
-                        g_tag = None
-                        g_hex = "#AAAAAA"
-                    else:
-                        ign_color = user_info.get('color', '#FFFFFF')
-                        g_tag = user_info.get('guild_tag')
-                        g_color_text = str(user_info.get('guild_color', 'GRAY')).upper()
-                        # Nutzt dein bestehendes Mapping MINECRAFT_NAME_TO_HEX für unbegrenzte Farben
-                        g_hex = MINECRAFT_NAME_TO_HEX.get(g_color_text, "#AAAAAA")
-
-                    leaderboard.append((
-                        sheet_name, float(val), val, (self.metric == "playtime"),
-                        level_value, icon, ign_color, g_tag, g_hex
-                    ))
-            except: continue
-
-        leaderboard.sort(key=lambda x: x[1], reverse=True)
-        return leaderboard
-
     def _get_leaderboard(self, period: str):
         return self.metric_labels[self.metric], self.data_cache.get(period, [])
 
@@ -2860,10 +2857,185 @@ class LeaderboardPeriodSelect(discord.ui.Select):
         await self.view_ref._refresh(interaction, new_period=selected)
 
 
+def _extract_leaderboard_data(wb, metric):
+    column_map = {"lifetime": "B", "session": "C", "daily": "E", "yesterday": "G", "monthly": "I"}
+    data_cache = {k: [] for k in column_map.keys()}
+    
+    all_user_data = {}
+    if os.path.exists(USER_COLORS_FILE):
+        try:
+            with open(USER_COLORS_FILE, 'r') as f: all_user_data = json.load(f)
+        except: pass
+
+    for sheet_name in wb.sheetnames:
+        if sheet_name.casefold() == "sheep wars historical data": continue
+        try:
+            sheet = wb[sheet_name]
+            
+            # Scan rows for this sheet
+            stat_rows = {}
+            for i in range(1, 100):
+                val = sheet[f'A{i}'].value
+                if val: stat_rows[str(val).lower()] = i
+            
+            if not stat_rows: continue
+
+            def get_val(m, col_letter):
+                if m == "kdr":
+                    k = _to_number(sheet[f"{col_letter}{stat_rows.get('kills', 1)}"].value)
+                    d = _to_number(sheet[f"{col_letter}{stat_rows.get('deaths', 1)}"].value)
+                    return k / d if d > 0 else k
+                elif m == "wlr":
+                    w = _to_number(sheet[f"{col_letter}{stat_rows.get('wins', 1)}"].value)
+                    l = _to_number(sheet[f"{col_letter}{stat_rows.get('losses', 1)}"].value)
+                    return w / l if l > 0 else w
+                else:
+                    row = stat_rows.get(m)
+                    if row:
+                        return _to_number(sheet[f"{col_letter}{row}"].value)
+                    return 0
+
+            level_value = 0
+            if 'level' in stat_rows:
+                level_value = int(_to_number(sheet[f'B{stat_rows["level"]}'].value))
+            elif 'experience' in stat_rows:
+                 level_value = int(_to_number(sheet[f'B{stat_rows["experience"]}'].value) / 5000)
+            
+            icon = get_prestige_icon(level_value)
+            
+            user_info = all_user_data.get(sheet_name.lower(), {})
+            if isinstance(user_info, str):
+                ign_color, g_tag, g_hex = user_info, None, "#AAAAAA"
+            else:
+                ign_color = user_info.get('color', '#FFFFFF')
+                g_tag = user_info.get('guild_tag')
+                g_hex = MINECRAFT_NAME_TO_HEX.get(str(user_info.get('guild_color', 'GRAY')).upper(), "#AAAAAA")
+
+            for period, col in column_map.items():
+                val = get_val(metric, col)
+                is_playtime = (metric == "playtime")
+                data_cache[period].append((
+                    sheet_name, float(val), val, is_playtime,
+                    level_value, icon, ign_color, g_tag, g_hex
+                ))
+        except Exception: continue
+
+    for p in data_cache:
+        data_cache[p].sort(key=lambda x: x[1], reverse=True)
+        
+    return data_cache
+
+def _calculate_ratio_value(sheet, col, stat_rows, metric):
+    try:
+        if metric == "wl_ratio":
+            wins = _to_number(sheet[f"{col}{stat_rows.get('wins', 1)}"].value)
+            losses = _to_number(sheet[f"{col}{stat_rows.get('losses', 1)}"].value)
+            return round(wins / losses, 2) if losses > 0 else wins
+        elif metric == "kd_ratio":
+            kills = _to_number(sheet[f"{col}{stat_rows.get('kills', 1)}"].value)
+            deaths = _to_number(sheet[f"{col}{stat_rows.get('deaths', 1)}"].value)
+            return round(kills / deaths, 2) if deaths > 0 else kills
+        elif metric == "kills_per_game":
+            kills = _to_number(sheet[f"{col}{stat_rows.get('kills', 1)}"].value)
+            games = _to_number(sheet[f"{col}{stat_rows.get('games_played', 1)}"].value)
+            return round(kills / games, 2) if games > 0 else 0
+        elif metric == "kills_per_win":
+            kills = _to_number(sheet[f"{col}{stat_rows.get('kills', 1)}"].value)
+            wins = _to_number(sheet[f"{col}{stat_rows.get('wins', 1)}"].value)
+            return round(kills / wins, 2) if wins > 0 else 0
+        elif metric == "damage_per_game":
+            damage = _to_number(sheet[f"{col}{stat_rows.get('damage_dealt', 1)}"].value)
+            games = _to_number(sheet[f"{col}{stat_rows.get('games_played', 1)}"].value)
+            return round(damage / games, 2) if games > 0 else 0
+        elif metric == "damage_per_sheep":
+            damage = _to_number(sheet[f"{col}{stat_rows.get('damage_dealt', 1)}"].value)
+            sheep = _to_number(sheet[f"{col}{stat_rows.get('sheep_thrown', 1)}"].value)
+            return round(damage / sheep, 2) if sheep > 0 else 0
+        elif metric == "wools_per_game":
+            wools = _to_number(sheet[f"{col}{stat_rows.get('magic_wool_hit', 1)}"].value)
+            games = _to_number(sheet[f"{col}{stat_rows.get('games_played', 1)}"].value)
+            return round(wools / games, 2) if games > 0 else 0
+        elif metric == "void_kd_ratio":
+            void_kills = _to_number(sheet[f"{col}{stat_rows.get('kills_void', 1)}"].value)
+            void_deaths = _to_number(sheet[f"{col}{stat_rows.get('deaths_void', 1)}"].value)
+            return round(void_kills / void_deaths, 2) if void_deaths > 0 else void_kills
+        elif metric == "explosive_kd_ratio":
+            exp_kills = _to_number(sheet[f"{col}{stat_rows.get('kills_explosive', 1)}"].value)
+            exp_deaths = _to_number(sheet[f"{col}{stat_rows.get('deaths_explosive', 1)}"].value)
+            return round(exp_kills / exp_deaths, 2) if exp_deaths > 0 else exp_kills
+        elif metric == "bow_kd_ratio":
+            bow_kills = _to_number(sheet[f"{col}{stat_rows.get('kills_bow', 1)}"].value)
+            bow_deaths = _to_number(sheet[f"{col}{stat_rows.get('deaths_bow', 1)}"].value)
+            return round(bow_kills / bow_deaths, 2) if bow_deaths > 0 else bow_kills
+        elif metric == "melee_kd_ratio":
+            melee_kills = _to_number(sheet[f"{col}{stat_rows.get('kills_melee', 1)}"].value)
+            melee_deaths = _to_number(sheet[f"{col}{stat_rows.get('deaths_melee', 1)}"].value)
+            return round(melee_kills / melee_deaths, 2) if melee_deaths > 0 else melee_kills
+        elif metric == "exp_per_hour":
+            exp = _to_number(sheet[f"{col}{stat_rows.get('experience', 1)}"].value)
+            playtime = _to_number(sheet[f"{col}{stat_rows.get('playtime', 1)}"].value)
+            hours = playtime / 60
+            return round(exp / hours, 2) if hours > 0 else 0
+        elif metric == "exp_per_game":
+            exp = _to_number(sheet[f"{col}{stat_rows.get('experience', 1)}"].value)
+            games = _to_number(sheet[f"{col}{stat_rows.get('games_played', 1)}"].value)
+            return round(exp / games, 2) if games > 0 else 0
+    except:
+        return None
+    return None
+
+def _extract_ratio_data(wb, metric):
+    column_map = {"lifetime": "B", "session": "C", "daily": "E", "yesterday": "G", "monthly": "I"}
+    data_cache = {k: [] for k in column_map.keys()}
+    all_user_data = {}
+    if os.path.exists(USER_COLORS_FILE):
+        try:
+            with open(USER_COLORS_FILE, 'r') as f: all_user_data = json.load(f)
+        except: pass
+    for sheet_name in wb.sheetnames:
+        if sheet_name.casefold() == "sheep wars historical data": continue
+        try:
+            sheet = wb[sheet_name]
+            
+            # Scan rows for this sheet
+            stat_rows = {}
+            for i in range(1, 100):
+                val = sheet[f'A{i}'].value
+                if val: stat_rows[str(val).lower()] = i
+            
+            if not stat_rows: continue
+            
+            level_row_idx = stat_rows.get('level')
+            exp_row_idx = stat_rows.get('experience')
+            
+            level_value = 0
+            if level_row_idx:
+                try: level_value = int(_to_number(sheet[f'B{level_row_idx}'].value))
+                except: pass
+            elif exp_row_idx:
+                try: level_value = int(_to_number(sheet[f'B{exp_row_idx}'].value) / 5000)
+                except: pass
+            icon = get_prestige_icon(level_value)
+            user_info = all_user_data.get(sheet_name.lower(), {})
+            if isinstance(user_info, str):
+                ign_color, g_tag, g_hex = user_info, None, "#AAAAAA"
+            else:
+                ign_color = user_info.get('color', '#FFFFFF')
+                g_tag = user_info.get('guild_tag')
+                g_hex = MINECRAFT_NAME_TO_HEX.get(str(user_info.get('guild_color', 'GRAY')).upper(), "#AAAAAA")
+            for period, col in column_map.items():
+                val = _calculate_ratio_value(sheet, col, stat_rows, metric)
+                if val is not None:
+                    data_cache[period].append((sheet_name, float(val), val, level_value, icon, ign_color, g_tag, g_hex))
+        except Exception: continue
+    for p in data_cache: data_cache[p].sort(key=lambda x: x[1], reverse=True)
+    return data_cache
+
 class RatioLeaderboardView(discord.ui.View):
-    def __init__(self, metric: str, wb):
+    def __init__(self, metric: str, data_cache: dict):
         super().__init__()
         self.metric = metric
+        self.data_cache = data_cache
         self.current_period = "lifetime"
         self.page = 0
         self.page_size = 10
@@ -2898,137 +3070,6 @@ class RatioLeaderboardView(discord.ui.View):
         self.period_select = RatioPeriodSelect(self)
         self.add_item(self.period_select)
         
-        # Pre-load all data
-        self.data_cache = {}
-        for p in self.column_map.keys():
-            self.data_cache[p] = self._load_leaderboard_data(wb, p)
-
-    def _load_leaderboard_data(self, wb, period: str):
-        col = self.column_map[period]
-
-        leaderboard = []
-        
-        all_user_data = {}
-        if os.path.exists(USER_COLORS_FILE):
-            with open(USER_COLORS_FILE, 'r') as f:
-                all_user_data = json.load(f)
-                
-        for sheet_name in wb.sheetnames:
-            if sheet_name.casefold() == "sheep wars historical data":
-                continue
-            try:
-                sheet = wb[sheet_name]
-
-                # Find stat rows dynamically
-                stat_rows = {}
-                for i in range(1, 100):
-                    stat_name = sheet[f'A{i}'].value
-                    if stat_name:
-                        stat_key = str(stat_name).lower()
-                        if stat_key not in stat_rows:  # Store first occurrence
-                            stat_rows[stat_key] = i
-
-                metric_value = None
-
-                # Calculate ratios
-                if self.metric == "wl_ratio":
-                    wins = _to_number(sheet[f"{col}{stat_rows.get('wins', 1)}"].value)
-                    losses = _to_number(sheet[f"{col}{stat_rows.get('losses', 1)}"].value)
-                    metric_value = round(wins / losses, 2) if losses > 0 else wins
-                elif self.metric == "kd_ratio":
-                    kills = _to_number(sheet[f"{col}{stat_rows.get('kills', 1)}"].value)
-                    deaths = _to_number(sheet[f"{col}{stat_rows.get('deaths', 1)}"].value)
-                    metric_value = round(kills / deaths, 2) if deaths > 0 else kills
-                elif self.metric == "kills_per_game":
-                    kills = _to_number(sheet[f"{col}{stat_rows.get('kills', 1)}"].value)
-                    games = _to_number(sheet[f"{col}{stat_rows.get('games_played', 1)}"].value)
-                    metric_value = round(kills / games, 2) if games > 0 else 0
-                elif self.metric == "kills_per_win":
-                    kills = _to_number(sheet[f"{col}{stat_rows.get('kills', 1)}"].value)
-                    wins = _to_number(sheet[f"{col}{stat_rows.get('wins', 1)}"].value)
-                    metric_value = round(kills / wins, 2) if wins > 0 else 0
-                elif self.metric == "damage_per_game":
-                    damage = _to_number(sheet[f"{col}{stat_rows.get('damage_dealt', 1)}"].value)
-                    games = _to_number(sheet[f"{col}{stat_rows.get('games_played', 1)}"].value)
-                    metric_value = round(damage / games, 2) if games > 0 else 0
-                elif self.metric == "damage_per_sheep":
-                    damage = _to_number(sheet[f"{col}{stat_rows.get('damage_dealt', 1)}"].value)
-                    sheep = _to_number(sheet[f"{col}{stat_rows.get('sheep_thrown', 1)}"].value)
-                    metric_value = round(damage / sheep, 2) if sheep > 0 else 0
-                elif self.metric == "wools_per_game":
-                    wools = _to_number(sheet[f"{col}{stat_rows.get('magic_wool_hit', 1)}"].value)
-                    games = _to_number(sheet[f"{col}{stat_rows.get('games_played', 1)}"].value)
-                    metric_value = round(wools / games, 2) if games > 0 else 0
-                elif self.metric == "void_kd_ratio":
-                    void_kills = _to_number(sheet[f"{col}{stat_rows.get('kills_void', 1)}"].value)
-                    void_deaths = _to_number(sheet[f"{col}{stat_rows.get('deaths_void', 1)}"].value)
-                    metric_value = round(void_kills / void_deaths, 2) if void_deaths > 0 else void_kills
-                elif self.metric == "explosive_kd_ratio":
-                    exp_kills = _to_number(sheet[f"{col}{stat_rows.get('kills_explosive', 1)}"].value)
-                    exp_deaths = _to_number(sheet[f"{col}{stat_rows.get('deaths_explosive', 1)}"].value)
-                    metric_value = round(exp_kills / exp_deaths, 2) if exp_deaths > 0 else exp_kills
-                elif self.metric == "bow_kd_ratio":
-                    bow_kills = _to_number(sheet[f"{col}{stat_rows.get('kills_bow', 1)}"].value)
-                    bow_deaths = _to_number(sheet[f"{col}{stat_rows.get('deaths_bow', 1)}"].value)
-                    metric_value = round(bow_kills / bow_deaths, 2) if bow_deaths > 0 else bow_kills
-                elif self.metric == "melee_kd_ratio":
-                    melee_kills = _to_number(sheet[f"{col}{stat_rows.get('kills_melee', 1)}"].value)
-                    melee_deaths = _to_number(sheet[f"{col}{stat_rows.get('deaths_melee', 1)}"].value)
-                    metric_value = round(melee_kills / melee_deaths, 2) if melee_deaths > 0 else melee_kills
-                elif self.metric == "exp_per_hour":
-                    exp = _to_number(sheet[f"{col}{stat_rows.get('experience', 1)}"].value)
-                    playtime = _to_number(sheet[f"{col}{stat_rows.get('playtime', 1)}"].value)
-                    # playtime is in minutes
-                    hours = playtime / 60
-                    metric_value = round(exp / hours, 2) if hours > 0 else 0
-                elif self.metric == "exp_per_game":
-                    exp = _to_number(sheet[f"{col}{stat_rows.get('experience', 1)}"].value)
-                    games = _to_number(sheet[f"{col}{stat_rows.get('games_played', 1)}"].value)
-                    metric_value = round(exp / games, 2) if games > 0 else 0
-
-                if metric_value is not None and isinstance(metric_value, (int, float)):
-                    try:
-                        level_value = 0
-                        level_row = None
-                        exp_row = None
-                        for i in range(1, 100):
-                            name = sheet[f'A{i}'].value
-                            if not name:
-                                continue
-                            key = str(name).lower()
-                            if key == 'level' and level_row is None:
-                                level_row = i
-                            elif key == 'experience' and exp_row is None:
-                                exp_row = i
-                        if level_row is not None:
-                            level_value = int(sheet[f'B{level_row}'].value or 0)
-                        elif exp_row is not None:
-                            exp = sheet[f'B{exp_row}'].value or 0
-                            level_value = int((exp or 0) / 5000)
-                    except Exception:
-                        level_value = 0
-
-                    icon = get_prestige_icon(level_value)
-                    
-                    user_info = all_user_data.get(sheet_name.lower(), {})
-                    if isinstance(user_info, str):
-                        ign_color = user_info
-                        g_tag = None
-                        g_hex = "#AAAAAA"
-                    else:
-                        ign_color = user_info.get('color', '#FFFFFF')
-                        g_tag = user_info.get('guild_tag')
-                        g_color_text = str(user_info.get('guild_color', 'GRAY')).upper()
-                        g_hex = MINECRAFT_NAME_TO_HEX.get(g_color_text, "#AAAAAA")
-
-                    leaderboard.append((sheet_name, float(metric_value), metric_value, level_value, icon, ign_color, g_tag, g_hex))
-
-            except Exception:
-                continue
-
-        leaderboard.sort(key=lambda x: x[1], reverse=True)
-        return leaderboard
-
     def _get_leaderboard(self, period: str):
         return self.metric_labels[self.metric], self.data_cache.get(period, [])
 
@@ -3400,7 +3441,7 @@ async def untrack(interaction: discord.Interaction, ign: str):
             return
     
     # Allow creator override; otherwise require claim authorization
-    if not (is_creator_user(interaction.user.id) or is_user_authorized(interaction.user.id, ign)):
+    if not (is_admin(interaction.user) or is_user_authorized(interaction.user.id, ign)):
         await interaction.followup.send(f"[ERROR] You are not authorized to untrack {ign}. Only the user who claimed this username or the creator can untrack it.")
         return
     
@@ -3800,14 +3841,7 @@ async def whatamirunningon(interaction: discord.Interaction):
             return
 
     # Only allow the creator (by ID) to run this
-    try:
-        allowed = False
-        if CREATOR_ID is not None:
-            allowed = str(interaction.user.id) == str(CREATOR_ID)
-        else:
-            allowed = interaction.user.name.casefold() == CREATOR_NAME.casefold()
-    except Exception:
-        allowed = False
+    allowed = is_admin(interaction.user)
 
     if not allowed:
         await interaction.followup.send("[ERROR] You are not authorized to run this command.", ephemeral=True)
@@ -3852,12 +3886,7 @@ async def refresh(interaction: discord.Interaction, mode: discord.app_commands.C
         # If an IGN was supplied, run per-user api_get.py with appropriate flags
         if ign:
             # Only allow creator or the Discord user who claimed the IGN
-            allowed = False
-            try:
-                if CREATOR_ID is not None and str(interaction.user.id) == str(CREATOR_ID):
-                    allowed = True
-            except Exception:
-                pass
+            allowed = is_admin(interaction.user)
             if not allowed and not is_user_authorized(interaction.user.id, ign):
                 await interaction.followup.send(f"[ERROR] You are not authorized to refresh {ign}.", ephemeral=True)
                 return
@@ -4174,7 +4203,18 @@ async def deathdistribution(interaction: discord.Interaction, ign: str = None):
 
 @bot.tree.command(name="sheepwars", description="Get player stats")
 async def sheepwars(interaction: discord.Interaction, ign: str):
-    await interaction.response.defer()
+    # Validate username early
+    ok, proper_ign = validate_and_normalize_ign(ign)
+    if not ok:
+        await interaction.response.send_message(f"The username {ign} is invalid.", ephemeral=True)
+        return
+    ign = proper_ign
+
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.defer()
+        except (discord.errors.NotFound, discord.errors.HTTPException):
+            return
     
     EXCEL_FILE = BOT_DIR / "stats.xlsx"
     if not EXCEL_FILE.exists():
@@ -4186,6 +4226,7 @@ async def sheepwars(interaction: discord.Interaction, ign: str):
     for s in wb.sheetnames:
         if s.lower() == ign.lower():
             sheet = wb[s]
+            ign = s
             break
     
     if not sheet:
@@ -4219,13 +4260,14 @@ async def sheepwars(interaction: discord.Interaction, ign: str):
         }
 
     level = _to_number(sheet["B4"].value)
+    icon = get_prestige_icon(int(level))
     
     # Get real-time status
     status_text, status_color = get_player_status(ign)
     
     wb.close() # Datei sicher schließen
 
-    view = StatsTabView(all_data, ign, int(level), "❤", status_text=status_text, status_color=status_color)
+    view = StatsTabView(all_data, ign, int(level), icon, status_text=status_text, status_color=status_color)
     file = view.generate_composite_image("all-time")
     await interaction.followup.send(file=file, view=view)
 
@@ -4260,23 +4302,23 @@ async def leaderboard(interaction: discord.Interaction, metric: discord.app_comm
         if not os.path.exists(EXCEL_FILE):
             await interaction.followup.send("[ERROR] Excel file not found")
             return
-        # FAILSAFE: Load workbook with guaranteed cleanup
-        wb = load_workbook(EXCEL_FILE, read_only=True, data_only=True)
-        view = LeaderboardView(metric.value, wb)
-        embed, file, _ = view.generate_leaderboard_image("lifetime", 0)
+        
+        def load_data_thread():
+            wb = load_workbook(EXCEL_FILE, read_only=True, data_only=True)
+            try:
+                return _extract_leaderboard_data(wb, metric.value)
+            finally:
+                wb.close()
+
+        data_cache = await asyncio.to_thread(load_data_thread)
+        view = LeaderboardView(metric.value, data_cache)
+        embed, file, _ = await asyncio.to_thread(view.generate_leaderboard_image, "lifetime", 0)
         if file:
             await interaction.followup.send(view=view, file=file)
         else:
             await interaction.followup.send(embed=embed, view=view)
     except Exception as e:
         await interaction.followup.send(f"[ERROR] {str(e)}")
-    finally:
-        # FAILSAFE: Always close workbook even if an error occurs
-        if wb is not None:
-            try:
-                wb.close()
-            except Exception as close_err:
-                print(f"[WARNING] Error closing workbook: {close_err}")
 
 
 @bot.tree.command(name="kill-leaderboard", description="View kills leaderboard by type")
@@ -4300,23 +4342,23 @@ async def kill_leaderboard(interaction: discord.Interaction, metric: discord.app
         if not os.path.exists(EXCEL_FILE):
             await interaction.followup.send("[ERROR] Excel file not found")
             return
-        # FAILSAFE: Load workbook with guaranteed cleanup
-        wb = load_workbook(EXCEL_FILE, read_only=True, data_only=True)
-        view = LeaderboardView(metric.value, wb)
-        embed, file, _ = view.generate_leaderboard_image("lifetime", 0)
+        
+        def load_data_thread():
+            wb = load_workbook(EXCEL_FILE, read_only=True, data_only=True)
+            try:
+                return _extract_leaderboard_data(wb, metric.value)
+            finally:
+                wb.close()
+
+        data_cache = await asyncio.to_thread(load_data_thread)
+        view = LeaderboardView(metric.value, data_cache)
+        embed, file, _ = await asyncio.to_thread(view.generate_leaderboard_image, "lifetime", 0)
         if file:
             await interaction.followup.send(file=file, view=view)
         else:
             await interaction.followup.send(embed=embed, view=view)
     except Exception as e:
         await interaction.followup.send(f"[ERROR] {str(e)}")
-    finally:
-        # FAILSAFE: Always close workbook even if an error occurs
-        if wb is not None:
-            try:
-                wb.close()
-            except Exception as close_err:
-                print(f"[WARNING] Error closing workbook: {close_err}")
 
 
 @bot.tree.command(name="death-leaderboard", description="View deaths leaderboard by type")
@@ -4340,23 +4382,23 @@ async def death_leaderboard(interaction: discord.Interaction, metric: discord.ap
         if not os.path.exists(EXCEL_FILE):
             await interaction.followup.send("[ERROR] Excel file not found")
             return
-        # FAILSAFE: Load workbook with guaranteed cleanup
-        wb = load_workbook(EXCEL_FILE, read_only=True, data_only=True)
-        view = LeaderboardView(metric.value, wb)
-        embed, file, _ = view.generate_leaderboard_image("lifetime", 0)
+        
+        def load_data_thread():
+            wb = load_workbook(EXCEL_FILE, read_only=True, data_only=True)
+            try:
+                return _extract_leaderboard_data(wb, metric.value)
+            finally:
+                wb.close()
+
+        data_cache = await asyncio.to_thread(load_data_thread)
+        view = LeaderboardView(metric.value, data_cache)
+        embed, file, _ = await asyncio.to_thread(view.generate_leaderboard_image, "lifetime", 0)
         if file:
             await interaction.followup.send(file=file, view=view)
         else:
             await interaction.followup.send(embed=embed, view=view)
     except Exception as e:
         await interaction.followup.send(f"[ERROR] {str(e)}")
-    finally:
-        # FAILSAFE: Always close workbook even if an error occurs
-        if wb is not None:
-            try:
-                wb.close()
-            except Exception as close_err:
-                print(f"[WARNING] Error closing workbook: {close_err}")
 
 
 @bot.tree.command(name="ratio-leaderboard", description="View ratio-based leaderboard")
@@ -4388,23 +4430,24 @@ async def ratio_leaderboard(interaction: discord.Interaction, metric: discord.ap
         if not os.path.exists(EXCEL_FILE):
             await interaction.followup.send("[ERROR] Excel file not found")
             return
-        # FAILSAFE: Load workbook with guaranteed cleanup
-        wb = load_workbook(EXCEL_FILE, read_only=True, data_only=True)
-        view = RatioLeaderboardView(metric.value, wb)
-        embed, file, _ = view.generate_leaderboard_image("lifetime", 0)
+        
+        def load_data_thread():
+            # Load workbook inside thread to avoid blocking
+            wb = load_workbook(EXCEL_FILE, read_only=True, data_only=True)
+            try:
+                return _extract_ratio_data(wb, metric.value)
+            finally:
+                wb.close()
+
+        data_cache = await asyncio.to_thread(load_data_thread)
+        view = RatioLeaderboardView(metric.value, data_cache)
+        embed, file, _ = await asyncio.to_thread(view.generate_leaderboard_image, "lifetime", 0)
         if file:
             await interaction.followup.send(file=file, view=view)
         else:
             await interaction.followup.send(embed=embed, view=view)
     except Exception as e:
         await interaction.followup.send(f"[ERROR] {str(e)}")
-    finally:
-        # FAILSAFE: Always close workbook even if an error occurs
-        if wb is not None:
-            try:
-                wb.close()
-            except Exception as close_err:
-                print(f"[WARNING] Error closing workbook: {close_err}")
 
 
 @bot.tree.command(name="prestiges", description="List all prestige prefixes with their colors")
