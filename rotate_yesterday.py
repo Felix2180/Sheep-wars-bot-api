@@ -13,10 +13,9 @@ TRACKED_FILE = str(SCRIPT_DIR / "tracked_users.txt")
 
 
 def safe_save_workbook(wb, filepath: str) -> bool:
-    """Safely save a workbook with backup and error recovery.
+    """Safely save a workbook using atomic write to prevent corruption.
     
-    Creates a backup before saving. If save fails, restores from backup.
-    Always ensures workbook is closed properly.
+    Writes to a temp file first, then atomically replaces the target file.
     
     Args:
         wb: The openpyxl Workbook object to save
@@ -25,26 +24,26 @@ def safe_save_workbook(wb, filepath: str) -> bool:
     Returns:
         bool: True if save succeeded, False otherwise
     """
-    backup_path = filepath + ".backup"
-    backup_created = False
+    temp_path = str(filepath) + ".tmp"
+    backup_path = str(filepath) + ".backup"
     
     try:
-        # Create backup if file exists
+        # 1. Save to temporary file first
+        wb.save(temp_path)
+        
+        # 2. Create backup of existing file
         if os.path.exists(filepath):
             try:
                 shutil.copy2(filepath, backup_path)
-                backup_created = True
-                print(f"[BACKUP] Created backup: {backup_path}")
             except Exception as backup_err:
                 print(f"[WARNING] Failed to create backup: {backup_err}")
-                # Continue anyway - we'll try to save without backup
         
-        # Attempt to save
-        wb.save(filepath)
+        # 3. Atomic replace
+        os.replace(temp_path, filepath)
         print(f"[SAVE] Successfully saved: {filepath}")
         
-        # Remove backup after successful save
-        if backup_created and os.path.exists(backup_path):
+        # 4. Cleanup backup
+        if os.path.exists(backup_path):
             try:
                 os.remove(backup_path)
             except Exception:
@@ -54,14 +53,12 @@ def safe_save_workbook(wb, filepath: str) -> bool:
         
     except Exception as save_err:
         print(f"[ERROR] Failed to save workbook: {save_err}")
-        
-        # Try to restore from backup if save failed
-        if backup_created and os.path.exists(backup_path):
+        # Clean up temp file
+        if os.path.exists(temp_path):
             try:
-                shutil.copy2(backup_path, filepath)
-                print(f"[RESTORE] Restored from backup after save failure")
-            except Exception as restore_err:
-                print(f"[ERROR] Failed to restore from backup: {restore_err}")
+                os.remove(temp_path)
+            except:
+                pass
         
         return False
         
@@ -87,7 +84,7 @@ def rotate_daily_to_yesterday():
     """Copy daily snapshot (column F) to yesterday snapshot (column H) for all users."""
     if not os.path.exists(EXCEL_FILE):
         print("[SKIP] Excel file not found")
-        return {}
+        return
     
     wb = None
     try:
@@ -132,14 +129,14 @@ def rotate_daily_to_yesterday():
         save_success = safe_save_workbook(wb, EXCEL_FILE)
         if not save_success:
             print("[ERROR] Failed to save Excel file after rotation")
-            return {}
+            return 0
         
-        print(f"\n[SUMMARY] Rotated daily→yesterday for {updated_count}/{len(users)} users")
-        return {}
+        print(f"\n[SUMMARY] Rotated daily->yesterday for {updated_count}/{len(users)} users")
+        return updated_count
         
     except Exception as e:
         print(f"[ERROR] Exception during rotate_daily_to_yesterday: {e}")
-        return {}
+        return 0
         
     finally:
         # FAILSAFE: Always close workbook even if an error occurs

@@ -15,6 +15,7 @@ import math
 import requests
 import asyncio
 import time
+from typing import Optional, Union
 try:
     from PIL import Image, ImageDraw, ImageFont
 except Exception:
@@ -128,7 +129,7 @@ class FileLock:
             except FileExistsError:
                 # Check for stale lock (older than 60 seconds)
                 try:
-                    if os.path.exists(self.lock_file) and time.time() - os.stat(self.lock_file).st_mtime > 60:
+                    if os.path.exists(self.lock_file) and time.time() - os.stat(self.lock_file).st_mtime > 300:
                         try:
                             os.remove(self.lock_file)
                         except OSError:
@@ -227,7 +228,8 @@ class StatsCache:
                     else:
                         ign_color = user_info.get('color', '#FFFFFF')
                         g_tag = user_info.get('guild_tag')
-                        g_hex = MINECRAFT_NAME_TO_HEX.get(str(user_info.get('guild_color', 'GRAY')).upper(), "#AAAAAA")
+                        raw_g = str(user_info.get('guild_color', 'GRAY')).upper()
+                        g_hex = raw_g if raw_g.startswith('#') else MINECRAFT_NAME_TO_HEX.get(raw_g, "#AAAAAA")
 
                     user_cache["meta"] = {"level": level, "icon": get_prestige_icon(level), "ign_color": ign_color, "guild_tag": g_tag, "guild_hex": g_hex, "username": sheet_name}
                     cache[sheet_name] = user_cache
@@ -261,7 +263,8 @@ class StatsCache:
             else:
                 ign_color = user_info.get('color', '#FFFFFF')
                 g_tag = user_info.get('guild_tag')
-                g_hex = MINECRAFT_NAME_TO_HEX.get(str(user_info.get('guild_color', 'GRAY')).upper(), "#AAAAAA")
+                raw_g = str(user_info.get('guild_color', 'GRAY')).upper()
+                g_hex = raw_g if raw_g.startswith('#') else MINECRAFT_NAME_TO_HEX.get(raw_g, "#AAAAAA")
 
             # Update cache
             self.data[username] = {"stats": processed_stats, "meta": {"level": level, "icon": get_prestige_icon(level), "ign_color": ign_color, "guild_tag": g_tag, "guild_hex": g_hex, "username": username}}
@@ -276,13 +279,21 @@ class StatsCache:
             if self.excel_path.exists():
                 self.last_mtime = self.excel_path.stat().st_mtime
 
+    async def refresh(self):
+        """Force reload of cache from Excel."""
+        async with self.lock:
+            print("[CACHE] Forcing cache refresh...")
+            self.data = await asyncio.to_thread(self._load_from_excel)
+            if self.excel_path.exists():
+                self.last_mtime = self.excel_path.stat().st_mtime
+            print(f"[CACHE] Refresh complete. Cached {len(self.data)} users.")
+
 STATS_CACHE = StatsCache()
 
 def safe_save_workbook(wb, filepath: str) -> bool:
-    """Safely save a workbook with backup and error recovery.
+    """Safely save a workbook using atomic write to prevent corruption.
     
-    Creates a backup before saving. If save fails, restores from backup.
-    Always ensures workbook is closed properly.
+    Writes to a temp file first, then atomically replaces the target file.
     
     Args:
         wb: The openpyxl Workbook object to save
@@ -291,26 +302,26 @@ def safe_save_workbook(wb, filepath: str) -> bool:
     Returns:
         bool: True if save succeeded, False otherwise
     """
+    temp_path = str(filepath) + ".tmp"
     backup_path = str(filepath) + ".backup"
-    backup_created = False
     
     try:
-        # Create backup if file exists
-        if os.path.exists(filepath):
+        # 1. Save to temporary file first
+        wb.save(temp_path)
+        
+        # 2. Create backup of existing file
+        if os.path.exists(str(filepath)):
             try:
-                shutil.copy2(filepath, backup_path)
-                backup_created = True
-                print(f"[BACKUP] Created backup: {backup_path}")
+                shutil.copy2(str(filepath), backup_path)
             except Exception as backup_err:
                 print(f"[WARNING] Failed to create backup: {backup_err}")
-                # Continue anyway - we'll try to save without backup
         
-        # Attempt to save
-        wb.save(str(filepath))
+        # 3. Atomic replace
+        os.replace(temp_path, str(filepath))
         print(f"[SAVE] Successfully saved: {filepath}")
         
-        # Remove backup after successful save
-        if backup_created and os.path.exists(backup_path):
+        # 4. Cleanup backup
+        if os.path.exists(backup_path):
             try:
                 os.remove(backup_path)
             except Exception:
@@ -320,14 +331,12 @@ def safe_save_workbook(wb, filepath: str) -> bool:
         
     except Exception as save_err:
         print(f"[ERROR] Failed to save workbook: {save_err}")
-        
-        # Try to restore from backup if save failed
-        if backup_created and os.path.exists(backup_path):
+        # Clean up temp file
+        if os.path.exists(temp_path):
             try:
-                shutil.copy2(backup_path, filepath)
-                print(f"[RESTORE] Restored from backup after save failure")
-            except Exception as restore_err:
-                print(f"[ERROR] Failed to restore from backup: {restore_err}")
+                os.remove(temp_path)
+            except:
+                pass
         
         return False
         
@@ -433,9 +442,6 @@ async def ensure_user_cached(ign: str, timeout: int = 60) -> tuple[bool, str]:
         if result.returncode != 0:
             print(f"[CACHE] Failed to fetch {ign}: {result.stderr}")
             return False, ign
-        
-        # Refresh cache
-        await STATS_CACHE.refresh()
         
         # Verify it's now cached
         cache_data = await STATS_CACHE.get_data()
@@ -901,24 +907,20 @@ def get_prestige_segments(level: int, icon: str) -> list:
     
     return segments
 
-def _safe_guild_tag(guild_tag: str) -> str | None:
+def _safe_guild_tag(guild_tag: str) -> Optional[str]:
     """Try to return guild tag, but return None if it contains problematic unicode."""
     if not guild_tag:
         return None
+    # Only allow ASCII characters to prevent rendering issues
     try:
-        # Try to encode/decode as ASCII to check if it's ASCII-safe
         guild_tag.encode('ascii')
         return guild_tag
     except UnicodeEncodeError:
-        # Contains non-ASCII, try to display but with fallback
-        try:
-            # Try to encode as UTF-8 and back
-            guild_tag.encode('utf-8').decode('utf-8')
-            return guild_tag
-        except Exception:
-            # If all else fails, return None (don't display)
-            return None 
-                              guild_tag: str = None, guild_color: str = None, two_line: bool = False) -> io.BytesIO:
+        # Filter out non-ASCII
+        cleaned = "".join(c for c in guild_tag if ord(c) < 128)
+        return cleaned if cleaned else None
+
+def render_prestige_with_text(level: int, icon: str, ign: str, suffix: str, ign_color: str = None, guild_tag: str = None, guild_color: str = None, two_line: bool = False) -> io.BytesIO:
     """Render a prestige prefix with IGN, optional guild tag, and optional suffix text.
     
     Returns a BytesIO containing the rendered PNG image.
@@ -940,7 +942,10 @@ def _safe_guild_tag(guild_tag: str) -> str | None:
     # Add guild tag if provided (with safety check)
     safe_tag = _safe_guild_tag(guild_tag)
     if safe_tag and guild_color:
-        guild_hex = MINECRAFT_NAME_TO_HEX.get(guild_color.upper(), '#FFFFFF')
+        if guild_color.startswith('#'):
+            guild_hex = guild_color
+        else:
+            guild_hex = MINECRAFT_NAME_TO_HEX.get(guild_color.upper(), '#FFFFFF')
         segments.append((guild_hex, f" [{safe_tag}]"))
     elif safe_tag:
         segments.append((MINECRAFT_CODE_TO_HEX.get('f', '#FFFFFF'), f" [{safe_tag}]"))
@@ -1099,7 +1104,7 @@ def render_stat_box(label: str, value: str, width: int = 200, height: int = 80):
 
 def create_stats_composite_image(level, icon, ign, tab_name, wins, losses, wl_ratio, kills, deaths, kd_ratio, 
                                   ign_color=None, guild_tag=None, guild_hex=None, playtime_seconds=0,
-                                  status_text="Online", status_color=(85, 255, 85)):
+                                  status_text="Online", status_color=(85, 255, 85), skin_image=None):
     canvas_w, canvas_h = 1200, 650
     margin, spacing = 40, 15
     composite = Image.new('RGBA', (canvas_w, canvas_h), (18, 18, 20, 255))
@@ -1109,8 +1114,11 @@ def create_stats_composite_image(level, icon, ign, tab_name, wins, losses, wl_ra
     header_card_w = (canvas_w - (margin * 2) - skin_w - (spacing * 2)) // 2
     
     skin_card = Image.new('RGBA', (skin_w, skin_h), (0, 0, 0, 0))
-    ImageDraw.Draw(skin_card).rounded_rectangle([0, 0, skin_w, skin_h], radius=15, fill=(35, 30, 45, 240))
-    skin = get_player_body(ign)
+    ImageDraw.Draw(skin_card).rounded_rectangle([0, 0, skin_w-1, skin_h-1], radius=15, fill=(35, 30, 45, 240))
+    if skin_image:
+        skin = skin_image
+    else:
+        skin = get_player_body(ign)
     if skin:
         skin.thumbnail((220, 260), Image.Resampling.LANCZOS)
         skin_card.paste(skin, ((skin_w - skin.width)//2, (skin_h - skin.height)//2), skin)
@@ -1340,8 +1348,8 @@ def create_streaks_image(ign: str, level: int, icon: str, ign_color: str, guild_
     title_io = render_prestige_with_text(level, icon, ign, "", ign_color, guild_tag, guild_color, two_line=False)
     title_img = Image.open(title_io)
 
-    box_width = 260
-    box_height = 110
+    box_width = 300
+    box_height = 120
     spacing = 20
 
     boxes = [
@@ -1352,14 +1360,21 @@ def create_streaks_image(ign: str, level: int, icon: str, ign_color: str, guild_
     line_width = boxes[0].width + boxes[1].width + spacing
     grid_height = box_height
     margin_x = 40
-    margin_y = 25
+    margin_y = 40
 
     title_width = title_img.width
     title_height = title_img.height
-    content_width = max(title_width, line_width)
+    # Enforce minimum width and even width for symmetry
+    content_width = max(title_width, line_width, 800)
 
     composite_width = content_width + margin_x * 2
-    composite_height = title_height + spacing + grid_height + margin_y * 2
+    if composite_width % 2 != 0:
+        composite_width += 1
+    
+    # Adjust bottom margin to match visual top margin of text (title image has ~6px top padding)
+    visual_top_margin = margin_y + 6
+    margin_bottom = visual_top_margin
+    composite_height = title_height + spacing + grid_height + margin_y + margin_bottom
 
     composite = Image.new('RGBA', (composite_width, composite_height), (18, 18, 20, 255))
     composite.paste(title_img, ((composite_width - title_width) // 2, margin_y), title_img if title_img.mode == 'RGBA' else None)
@@ -1376,7 +1391,7 @@ def create_streaks_image(ign: str, level: int, icon: str, ign_color: str, guild_
     font_footer = _load_font("DejaVuSans.ttf", 14)
     bbox = draw.textbbox((0, 0), footer_text, font=font_footer)
     text_w = bbox[2] - bbox[0]
-    draw.text(((composite_width - text_w) // 2, composite_height - margin_y), footer_text, font=font_footer, fill=(60, 60, 65))
+    draw.text(((composite_width - text_w) // 2, composite_height - 30), footer_text, font=font_footer, fill=(60, 60, 65))
 
     out = io.BytesIO()
     composite.save(out, format='PNG')
@@ -1708,7 +1723,7 @@ def render_prestige_range_image(base: int, end_display: int) -> io.BytesIO:
 
     combined = []
     combined.extend(start_segments)
-    combined.append((MINECRAFT_CODE_TO_HEX.get('7', '#AAAAAA'), ' ➜ '))
+    combined.append((MINECRAFT_CODE_TO_HEX.get('7', '#AAAAAA'), ' -> '))
     combined.extend(end_segments)
 
     return _render_text_segments_to_image(combined)
@@ -2057,7 +2072,7 @@ def is_user_authorized(discord_user_id: int, ign: str) -> bool:
     key = ign.casefold()
     return links.get(key) == str(discord_user_id)
 
-def is_admin(user: discord.User | discord.Member) -> bool:
+def is_admin(user: Union[discord.User, discord.Member]) -> bool:
     """Check if user is a bot admin."""
     if str(user.id) in ADMIN_IDS:
         return True
@@ -2163,7 +2178,7 @@ def render_modern_card(label, value, width, height, color=(255, 255, 255), is_he
     img = Image.new('RGBA', (int(width), int(height)), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     card_bg = (35, 30, 45, 240) 
-    draw.rounded_rectangle([0, 0, width, height], radius=15, fill=card_bg)
+    draw.rounded_rectangle([0, 0, width-1, height-1], radius=15, fill=card_bg)
     font_label = _load_font("DejaVuSans-Bold.ttf", 14)
     font_value = _load_font("DejaVuSans-Bold.ttf", 28 if is_header else 24)
     l_text = f"{label.upper()}:"
@@ -2281,7 +2296,7 @@ def remove_default_user(discord_user_id: int) -> bool:
         return True
     return False
 
-def get_default_user(discord_user_id: int) -> str | None:
+def get_default_user(discord_user_id: int) -> Optional[str]:
     defaults = load_default_users()
     return defaults.get(str(discord_user_id))
 
@@ -2725,7 +2740,7 @@ async def scheduler_loop():
 
 # Helper class for stats tab view
 class StatsTabView(discord.ui.View):
-    def __init__(self, data_dict, ign, level_value: int, prestige_icon: str, status_text="Online", status_color=(85, 255, 85)):
+    def __init__(self, data_dict, ign, level_value: int, prestige_icon: str, status_text="Online", status_color=(85, 255, 85), skin_image=None):
         super().__init__()
         self.data = data_dict 
         self.ign = ign
@@ -2733,6 +2748,7 @@ class StatsTabView(discord.ui.View):
         self.prestige_icon = prestige_icon
         self.status_text = status_text
         self.status_color = status_color
+        self.skin_image = skin_image
         self.current_tab = "all-time"
         self.ign_color = None
         self.guild_tag = None
@@ -2771,7 +2787,8 @@ class StatsTabView(discord.ui.View):
             tab_data['kills'], tab_data['deaths'], tab_data['kdr'],
             self.ign_color, self.guild_tag, self.guild_hex, 
             playtime_seconds=tab_data['playtime'],
-            status_text=self.status_text, status_color=self.status_color
+            status_text=self.status_text, status_color=self.status_color,
+            skin_image=self.skin_image
         )
         return discord.File(img_io, filename=f"{self.ign}_{tab_name}.png")
 
@@ -3248,7 +3265,7 @@ class LeaderboardView(discord.ui.View):
         else:
             return self.get_leaderboard_embed(period, clamped_page, total_pages, leaderboard), None, total_pages
 
-    def get_leaderboard_embed(self, period: str, page: int = 0, total_pages: int = 1, leaderboard: list | None = None):
+    def get_leaderboard_embed(self, period: str, page: int = 0, total_pages: int = 1, leaderboard: Optional[list] = None):
         metric_label, leaderboard_data = self._get_leaderboard(period) if leaderboard is None else (self.metric_labels[self.metric], leaderboard)
 
         if not leaderboard_data:
@@ -3291,7 +3308,7 @@ class LeaderboardView(discord.ui.View):
         embed.set_footer(text=f"Page {clamped_page + 1} of {total_pages}")
         return embed
 
-    async def _refresh(self, interaction: discord.Interaction, *, new_period: str | None = None, page_delta: int = 0):
+    async def _refresh(self, interaction: discord.Interaction, *, new_period: Optional[str] = None, page_delta: int = 0):
         if new_period is not None:
             self.current_period = new_period
             self.page = 0
@@ -3380,13 +3397,13 @@ def _load_leaderboard_data_from_excel(metric: str):
                     stat_name = str(stat_name).lower().strip()
                     
                     # Extract period values
-                    # Column B = Lifetime, C = Session Delta, D = Daily, E = Yesterday, F = Monthly
+                    # Column B = Lifetime, C = Session Delta, E = Daily Delta, G = Yesterday Delta, I = Monthly Delta
                     stats_dict[stat_name] = {
                         "lifetime": ws.cell(row_idx, 2).value or 0,
                         "session": ws.cell(row_idx, 3).value or 0,
-                        "daily": ws.cell(row_idx, 4).value or 0,
-                        "yesterday": ws.cell(row_idx, 5).value or 0,
-                        "monthly": ws.cell(row_idx, 6).value or 0,
+                        "daily": ws.cell(row_idx, 5).value or 0,
+                        "yesterday": ws.cell(row_idx, 7).value or 0,
+                        "monthly": ws.cell(row_idx, 9).value or 0,
                     }
                 
                 # Load user metadata
@@ -3405,7 +3422,8 @@ def _load_leaderboard_data_from_excel(metric: str):
                 icon = ""
                 ign_color = user_meta.get("color", "#FFFFFF")
                 guild_tag = user_meta.get("guild_tag")
-                guild_color = user_meta.get("guild_color")
+                raw_g = str(user_meta.get('guild_color', 'GRAY')).upper()
+                guild_color = raw_g if raw_g.startswith('#') else MINECRAFT_NAME_TO_HEX.get(raw_g, "#AAAAAA")
                 
                 # Process each period
                 for period in periods:
@@ -3600,9 +3618,9 @@ def _load_ratio_leaderboard_data_from_excel(metric: str):
                     stats_dict[stat_name] = {
                         "lifetime": ws.cell(row_idx, 2).value or 0,
                         "session": ws.cell(row_idx, 3).value or 0,
-                        "daily": ws.cell(row_idx, 4).value or 0,
-                        "yesterday": ws.cell(row_idx, 5).value or 0,
-                        "monthly": ws.cell(row_idx, 6).value or 0,
+                        "daily": ws.cell(row_idx, 5).value or 0,
+                        "yesterday": ws.cell(row_idx, 7).value or 0,
+                        "monthly": ws.cell(row_idx, 9).value or 0,
                     }
                 
                 # Load user metadata
@@ -3621,7 +3639,8 @@ def _load_ratio_leaderboard_data_from_excel(metric: str):
                 icon = ""
                 ign_color = user_meta.get("color", "#FFFFFF")
                 guild_tag = user_meta.get("guild_tag")
-                guild_color = user_meta.get("guild_color")
+                raw_g = str(user_meta.get('guild_color', 'GRAY')).upper()
+                guild_color = raw_g if raw_g.startswith('#') else MINECRAFT_NAME_TO_HEX.get(raw_g, "#AAAAAA")
                 
                 # Process each period
                 for period in periods:
@@ -3813,7 +3832,7 @@ class RatioLeaderboardView(discord.ui.View):
         else:
             return self.get_leaderboard_embed(period, clamped_page, total_pages, leaderboard), None, total_pages
 
-    def get_leaderboard_embed(self, period: str, page: int = 0, total_pages: int = 1, leaderboard: list | None = None):
+    def get_leaderboard_embed(self, period: str, page: int = 0, total_pages: int = 1, leaderboard: Optional[list] = None):
         metric_label, leaderboard_data = self._get_leaderboard(period) if leaderboard is None else (self.metric_labels[self.metric], leaderboard)
 
         if not leaderboard_data:
@@ -3853,7 +3872,7 @@ class RatioLeaderboardView(discord.ui.View):
         embed.set_footer(text=f"Page {clamped_page + 1} of {total_pages}")
         return embed
 
-    async def _refresh(self, interaction: discord.Interaction, *, new_period: str | None = None, page_delta: int = 0):
+    async def _refresh(self, interaction: discord.Interaction, *, new_period: Optional[str] = None, page_delta: int = 0):
         if new_period is not None:
             self.current_period = new_period
             self.page = 0
@@ -4004,30 +4023,38 @@ class StreakRequestView(discord.ui.View):
             await interaction.response.send_message("You already have a pending streak tracking request.", ephemeral=True)
             return
 
-        creator = None
-        if CREATOR_ID is not None:
+        admins = []
+        for admin_id in ADMIN_IDS:
             try:
-                uid = int(CREATOR_ID)
-                creator = interaction.client.get_user(uid) or await interaction.client.fetch_user(uid)
+                uid = int(admin_id)
+                user = interaction.client.get_user(uid) or await interaction.client.fetch_user(uid)
+                if user:
+                    admins.append(user)
             except Exception:
-                creator = None
+                pass
 
-        if creator is None:
-            await interaction.response.send_message("[ERROR] Cannot reach creator for approval. Contact administrator.", ephemeral=True)
+        if not admins:
+            await interaction.response.send_message("[ERROR] Cannot reach administrators for approval.", ephemeral=True)
             return
 
         view = StreakApprovalView(self.ign, self.requester.name, self.requester_id, self.stats_snapshot)
         _register_pending_streak(self.requester_id, self.ign, self.stats_snapshot, view)
 
-        try:
-            await creator.send(
-                f"{self.requester.name} ({self.requester_id}) requests streak tracking for {self.ign}.\n"
-                f"Click Accept/Deny below or run /verification-streak user:{self.requester_id} option: accept/deny.",
-                view=view,
-            )
-        except Exception as e:
+        sent_count = 0
+        for admin in admins:
+            try:
+                await admin.send(
+                    f"{self.requester.name} ({self.requester_id}) requests streak tracking for {self.ign}.\n"
+                    f"Click Accept/Deny below or run /verification-streak user:{self.requester_id} option: accept/deny.",
+                    view=view,
+                )
+                sent_count += 1
+            except Exception:
+                pass
+
+        if sent_count == 0:
             _pop_pending_streak(self.requester_id)
-            await interaction.response.send_message(f"[ERROR] Could not send streak approval request: {e}", ephemeral=True)
+            await interaction.response.send_message(f"[ERROR] Could not send streak approval request to administrators.", ephemeral=True)
             return
 
         await interaction.response.send_message("✅ Sent streak tracking request for approval.", ephemeral=True)
@@ -4192,35 +4219,44 @@ async def claim(interaction: discord.Interaction, ign: str):
                 await interaction.followup.send(f"[ERROR] {ign} is already claimed by another user.")
             return
         
-        # Get creator user
-        creator = None
-        if CREATOR_ID is not None:
+        # Get admin users
+        admins = []
+        for admin_id in ADMIN_IDS:
             try:
-                uid = int(CREATOR_ID)
-                creator = bot.get_user(uid) or await bot.fetch_user(uid)
+                uid = int(admin_id)
+                user = bot.get_user(uid) or await bot.fetch_user(uid)
+                if user:
+                    admins.append(user)
             except Exception:
                 pass
         
-        if creator is None:
-            await interaction.followup.send("[ERROR] Cannot reach creator for approval. Contact administrator.")
+        if not admins:
+            await interaction.followup.send("[ERROR] Cannot reach administrators for approval.")
             return
         
         # Send waiting message to requester
         requester_name = interaction.user.name
-        await interaction.followup.send(f"Asked Chuckegg for approval to claim {ign}. Please wait for confirmation.")
+        await interaction.followup.send(f"Asked administrators for approval to claim {ign}. Please wait for confirmation.")
         
-        # Create approval view and send to creator
+        # Create approval view and send to admins
         view = ApprovalView(ign, requester_name, interaction.user.id, interaction)
         _register_pending_claim(interaction.user.id, ign, view)
-        try:
-            await creator.send(
-                f"{requester_name} ({interaction.user.id}) wants to claim {ign}.\n"
-                f"Click Accept/Deny below or run /verification user:{interaction.user.id} option: accept/deny.",
-                view=view,
-            )
-        except Exception as e:
+        
+        sent_count = 0
+        for admin in admins:
+            try:
+                await admin.send(
+                    f"{requester_name} ({interaction.user.id}) wants to claim {ign}.\n"
+                    f"Click Accept/Deny below or run /verification user:{interaction.user.id} option: accept/deny.",
+                    view=view,
+                )
+                sent_count += 1
+            except Exception:
+                pass
+        
+        if sent_count == 0:
             _pop_pending_claim(interaction.user.id)
-            await interaction.followup.send(f"[ERROR] Could not send approval request to creator: {str(e)}")
+            await interaction.followup.send(f"[ERROR] Could not send approval request to administrators.")
             return
         
         # Wait for approval (no timeout)
@@ -4239,9 +4275,9 @@ async def claim(interaction: discord.Interaction, ign: str):
 
         if view.approved:
             link_user_to_ign(interaction.user.id, ign)
-            await interaction.followup.send(f"Chuckegg has approved your claim. {ign} is now linked to your Discord account.")
+            await interaction.followup.send(f"An administrator has approved your claim. {ign} is now linked to your Discord account.")
         else:
-            await interaction.followup.send(f"Chuckegg has denied your claim for {ign}.")
+            await interaction.followup.send(f"An administrator has denied your claim for {ign}.")
             
     except Exception as e:
         await interaction.followup.send(f"[ERROR] {str(e)}")
@@ -5396,9 +5432,12 @@ async def sheepwars(interaction: discord.Interaction, ign: str = None):
     icon = meta.get("icon", "")
     
     # Get real-time status
-    status_text, status_color = get_player_status(ign)
+    # Parallelize status and skin fetching to reduce load time
+    status_task = asyncio.to_thread(get_player_status, ign)
+    skin_task = asyncio.to_thread(get_player_body, ign)
+    (status_text, status_color), skin_image = await asyncio.gather(status_task, skin_task)
     
-    view = StatsTabView(all_data, ign, int(level), icon, status_text=status_text, status_color=status_color)
+    view = StatsTabView(all_data, ign, int(level), icon, status_text=status_text, status_color=status_color, skin_image=skin_image)
     
     # Check if tracked to determine response
     is_tracked = any(u.casefold() == ign.casefold() for u in tracked_users)
@@ -5640,4 +5679,4 @@ async def stopbot(interaction: discord.Interaction):
 
 # Run bot
 if __name__ == "__main__":
-    bot.run(DISCORD_TOKEN)
+    bot.run(DISCORD_TOKEN) 
