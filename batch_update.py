@@ -231,7 +231,7 @@ def batch_update(schedule: str, api_key: str | None = None) -> dict:
     Returns:
         Dict with results: {username: (success, snapshots_taken)}
     """
-    # Special handling for 'yesterday' schedule - rotate daily→yesterday without API calls
+    # Special handling for 'yesterday' schedule - rotate daily->yesterday without API calls
     if schedule == 'yesterday':
         print("[INFO] Running yesterday rotation (copying daily->yesterday snapshots)", flush=True)
         results = rotate_daily_to_yesterday()

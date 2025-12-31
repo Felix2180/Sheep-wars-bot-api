@@ -1,19 +1,19 @@
 {
   "Chuckegg": {
-    "winstreak": 45,
-    "killstreak": 0,
-    "last_wins": 18682,
-    "last_losses": 6134,
-    "last_kills": 36249,
-    "last_deaths": 9944
-  },
-  "pogdvde": {
     "winstreak": 0,
     "killstreak": 0,
-    "last_wins": 13501,
-    "last_losses": 6260,
-    "last_kills": 29755,
-    "last_deaths": 9004
+    "last_wins": 18597,
+    "last_losses": 6133,
+    "last_kills": 36132,
+    "last_deaths": 9931
+  },
+  "pogdvde": {
+    "winstreak": 37,
+    "killstreak": 5,
+    "last_wins": 13360,
+    "last_losses": 6229,
+    "last_kills": 29477,
+    "last_deaths": 8960
   },
   "Dejectin": {
     "winstreak": 0,
@@ -24,12 +24,12 @@
     "last_deaths": 3486
   },
   "Kimmiii20": {
-    "winstreak": 8,
-    "killstreak": 0,
-    "last_wins": 1502,
-    "last_losses": 813,
-    "last_kills": 1988,
-    "last_deaths": 1170
+    "winstreak": 9,
+    "killstreak": 2,
+    "last_wins": 1406,
+    "last_losses": 800,
+    "last_kills": 1901,
+    "last_deaths": 1134
   },
   "Qrsn": {
     "winstreak": 0,
@@ -46,13 +46,5 @@
     "last_losses": 351,
     "last_kills": 2472,
     "last_deaths": 677
-  },
-  "ewz_": {
-    "winstreak": 0,
-    "killstreak": 0,
-    "last_wins": 271,
-    "last_losses": 145,
-    "last_kills": 191,
-    "last_deaths": 292
   }
 }
